@@ -17,7 +17,7 @@ In the US, the Census Bureau re-draws districts every 10 years.
    6. end_year_shp = path for the end year shape file
 
 ## Example
-The example below illustrate the usage for the scrip to find the equivalent tracts in   
+The example below illustrates the usage for the script to find the equivalent tracts in   
 2010 for GEOID: 10001043202 
 
     data = get_conversion_table()
