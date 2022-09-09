@@ -136,3 +136,6 @@ CensusAPIKey.txt
 
 # History file
 .Rhistory
+
+# IDE generated processing file
+.idea/
