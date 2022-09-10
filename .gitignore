@@ -139,3 +139,10 @@ CensusAPIKey.txt
 
 # IDE generated processing file
 .idea/
+
+# State FIPS to abbreviation conversion dictionary from the repo
+state.txt
+
+# Program generated data files
+interpolated.csv
+tracts2020.csv
