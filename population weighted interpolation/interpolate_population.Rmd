@@ -90,31 +90,31 @@ block_frame <- block_frame %>% rename(the_value=value)
 
 # Collapse dataframes to one entry per GEOID
 ```{r}
-# Collapse zcta data
-zcta_pop_frame <- zcta_frame %>% filter(variable == "pop") %>% rename(pop=value) %>% select(GEOID, pop, geometry)
-zcta_house_frame <- zcta_frame %>% filter(variable == "housing") %>% rename(housing=value) %>% select(GEOID, housing) %>% st_drop_geometry()
-zcta_white_frame <- zcta_frame %>% filter(variable == "white") %>% rename(white=value) %>% select(GEOID, white) %>% st_drop_geometry()
-merged_zcta_frame <- merge(zcta_pop_frame, zcta_house_frame, by="GEOID") %>% merge(zcta_white_frame, by="GEOID")
+# Collapse tract2019 data
+tract2019_pop_frame <- tract2019_frame %>% filter(variable == "pop") %>% rename(pop=estimate) %>% select(GEOID, pop, geometry)
+tract2019_house_frame <- tract2019_frame %>% filter(variable == "housing") %>% rename(housing=estimate) %>% select(GEOID, housing) %>% st_drop_geometry()
+tract2019_white_frame <- tract2019_frame %>% filter(variable == "white") %>% rename(white=estimate) %>% select(GEOID, white) %>% st_drop_geometry()
+merged_tract2019_frame <- merge(tract2019_pop_frame, tract2019_house_frame, by="GEOID") %>% merge(tract2019_white_frame, by="GEOID")
 
 # Collapse tract data
-tract_pop_frame <- tract_frame %>% filter(variable == "pop") %>% rename(pop=value) %>% select(GEOID, pop, geometry)
-tract_house_frame <- tract_frame %>% filter(variable == "housing") %>% rename(housing=value) %>% select(GEOID, housing) %>% st_drop_geometry()
-tract_white_frame <- tract_frame %>% filter(variable == "white") %>% rename(white=value) %>% select(GEOID, white) %>% st_drop_geometry()
-merged_tract_frame <- merge(tract_pop_frame, tract_house_frame, by="GEOID") %>% merge(tract_white_frame, by="GEOID")
+tract2020_pop_frame <- tract2020_frame %>% filter(variable == "pop") %>% rename(pop=estimate) %>% select(GEOID, pop, geometry)
+tract2020_house_frame <- tract2020_frame %>% filter(variable == "housing") %>% rename(housing=estimate) %>% select(GEOID, housing) %>% st_drop_geometry()
+tract2020_white_frame <- tract2020_frame %>% filter(variable == "white") %>% rename(white=estimate) %>% select(GEOID, white) %>% st_drop_geometry()
+merged_tract2020_frame <- merge(tract2020_pop_frame, tract2020_house_frame, by="GEOID") %>% merge(tract2020_white_frame, by="GEOID")
 ```
 
 # Get dummy variables for zipcode of origin
 ```{r}
-merged_zcta_frame <- dummy_cols(merged_zcta_frame, select_columns = "GEOID")
-merged_zcta_frame <- st_as_sf(merged_zcta_frame)
+merged_tract2019_frame <- dummy_cols(merged_tract2019_frame, select_columns = "GEOID")
+merged_tract2019_frame <- st_as_sf(merged_tract2019_frame)
 ```
 
 
 # Interpolate data onto census tracts using population weights from census blocks
 ```{r}
 interpolated <- interpolate_pw(
-  merged_zcta_frame,
-  merged_tract_frame,
+  merged_tract2019_frame,
+  merged_tract2020_frame,
   to_id = "GEOID",
   extensive = TRUE, 
   weights = block_frame,
@@ -128,16 +128,16 @@ interpolated <- interpolate_pw(
 ```{r}
 ## Save the summary list
 write_csv(interpolated,
-          #here("interpolated.csv") #Population weighted interpolation
-          here("interpolated_house.csv") #House weighted interpolation
+          here("interpolated.csv") #Population weighted interpolation
+          #here("interpolated_house.csv") #House weighted interpolation
           )
 ```
 
-# Write the census tract data to a csv
+# Write the census tract data from 2020 to a csv
 ```{r}
 ## Save the summary list
-write_csv(merged_tract_frame,
-          here("tracts.csv")
+write_csv(merged_tract2020_frame,
+          here("tracts2020.csv")
           )
 ```
 
