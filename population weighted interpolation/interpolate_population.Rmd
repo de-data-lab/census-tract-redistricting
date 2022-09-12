@@ -141,6 +141,14 @@ write_csv(merged_tract2020_frame,
           )
 ```
 
+# Write the census tract data from 2019 to a csv
+```{r}
+## Save the summary list
+write_csv(merged_tract2019_frame,
+          here("tracts2019.csv")
+          )
+```
+
 
 # Acquire an API key
 ```{r}
