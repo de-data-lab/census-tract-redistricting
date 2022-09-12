@@ -25,19 +25,20 @@ census_api_key(API_KEY)
 ```{r}
 census_api_key(API_KEY)
 
-years <- lst(2019)
-v19 <- load_variables(2019, "acs5", cache = TRUE)
+years <- lst(2010)
+v10 <- load_variables(2010, "pl", cache = TRUE)
 
-tract2019_frame <- map_dfr(
+tract2010_frame <- map_dfr(
   years,
-  ~ get_acs(
+  ~ get_decennial(
     geography = "tract",
-    variables = c(pop="B01001_001" , #Total population
-                  housing="B11001_001", #Total number of housing units
-                  white = "B11001A_001" #Total number of householders who are White alone
+    variables = c(pop="P001001" , #Total population
+                  housing="H001001", #Total number of housing units
+                  white = "P001003" #Total white population
     ),
     state = c("DE"),
     year = .x,
+    sumfile = "pl",
     geometry = TRUE,
     output="tidy"
   ),
@@ -45,18 +46,19 @@ tract2019_frame <- map_dfr(
 )
 
 years <- lst(2020)
-v20 <- load_variables(2020, "acs5", cache = TRUE)
+v20 <- load_variables(2020, "pl", cache = TRUE)
 
 tract2020_frame <- map_dfr(
   years,
-  ~ get_acs(
+  ~ get_decennial(
     geography = "tract",
-    variables = c(pop="B01001_001" , #Total population
-                  housing="B11001_001", #Total number of housing units
-                  white = "B11001A_001" #Total number of householders who are White alone
+    variables = c(pop="P1_001N" , #Total population
+                  housing="H1_001N", #Total number of housing units
+                  white = "P1_003N" #Total white population
     ),
     state = c("DE"),
     year = .x,
+    sumfile = "pl",
     geometry = TRUE,
     output="tidy"
   ),
@@ -91,29 +93,29 @@ block_frame <- block_frame %>% rename(the_value=value)
 # Collapse dataframes to one entry per GEOID
 ```{r}
 # Collapse tract2019 data
-tract2019_pop_frame <- tract2019_frame %>% filter(variable == "pop") %>% rename(pop=estimate) %>% select(GEOID, pop, geometry)
-tract2019_house_frame <- tract2019_frame %>% filter(variable == "housing") %>% rename(housing=estimate) %>% select(GEOID, housing) %>% st_drop_geometry()
-tract2019_white_frame <- tract2019_frame %>% filter(variable == "white") %>% rename(white=estimate) %>% select(GEOID, white) %>% st_drop_geometry()
-merged_tract2019_frame <- merge(tract2019_pop_frame, tract2019_house_frame, by="GEOID") %>% merge(tract2019_white_frame, by="GEOID")
+tract2010_pop_frame <- tract2010_frame %>% filter(variable == "pop") %>% rename(pop=value) %>% select(GEOID, pop, geometry)
+tract2010_house_frame <- tract2010_frame %>% filter(variable == "housing") %>% rename(housing=value) %>% select(GEOID, housing) %>% st_drop_geometry()
+tract2010_white_frame <- tract2010_frame %>% filter(variable == "white") %>% rename(white=value) %>% select(GEOID, white) %>% st_drop_geometry()
+merged_tract2010_frame <- merge(tract2010_pop_frame, tract2010_house_frame, by="GEOID") %>% merge(tract2010_white_frame, by="GEOID")
 
 # Collapse tract data
-tract2020_pop_frame <- tract2020_frame %>% filter(variable == "pop") %>% rename(pop=estimate) %>% select(GEOID, pop, geometry)
-tract2020_house_frame <- tract2020_frame %>% filter(variable == "housing") %>% rename(housing=estimate) %>% select(GEOID, housing) %>% st_drop_geometry()
-tract2020_white_frame <- tract2020_frame %>% filter(variable == "white") %>% rename(white=estimate) %>% select(GEOID, white) %>% st_drop_geometry()
+tract2020_pop_frame <- tract2020_frame %>% filter(variable == "pop") %>% rename(pop=value) %>% select(GEOID, pop, geometry)
+tract2020_house_frame <- tract2020_frame %>% filter(variable == "housing") %>% rename(housing=value) %>% select(GEOID, housing) %>% st_drop_geometry()
+tract2020_white_frame <- tract2020_frame %>% filter(variable == "white") %>% rename(white=value) %>% select(GEOID, white) %>% st_drop_geometry()
 merged_tract2020_frame <- merge(tract2020_pop_frame, tract2020_house_frame, by="GEOID") %>% merge(tract2020_white_frame, by="GEOID")
 ```
 
-# Get dummy variables for zipcode of origin
+# Get dummy variables for tract of origin
 ```{r}
-merged_tract2019_frame <- dummy_cols(merged_tract2019_frame, select_columns = "GEOID")
-merged_tract2019_frame <- st_as_sf(merged_tract2019_frame)
+merged_tract2010_frame <- dummy_cols(merged_tract2010_frame, select_columns = "GEOID")
+merged_tract2010_frame <- st_as_sf(merged_tract2010_frame)
 ```
 
 
 # Interpolate data onto census tracts using population weights from census blocks
 ```{r}
 interpolated <- interpolate_pw(
-  merged_tract2019_frame,
+  merged_tract2010_frame,
   merged_tract2020_frame,
   to_id = "GEOID",
   extensive = TRUE, 
@@ -141,11 +143,11 @@ write_csv(merged_tract2020_frame,
           )
 ```
 
-# Write the census tract data from 2019 to a csv
+# Write the census tract data from 2010 to a csv
 ```{r}
 ## Save the summary list
-write_csv(merged_tract2019_frame,
-          here("tracts2019.csv")
+write_csv(merged_tract2010_frame,
+          here("tracts2010.csv")
           )
 ```
 
