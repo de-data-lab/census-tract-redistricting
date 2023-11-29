@@ -1,0 +1,8 @@
+pandas 
+requests
+geopandas
+jupyterlab
+pygris
+azure-storage-blob
+us
+yaml
