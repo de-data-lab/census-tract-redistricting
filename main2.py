@@ -22,6 +22,7 @@ OVERLAP_PRECISION = 3 # how many decimals you want to calculate the overlap with
 # I *coudld* write this so that it changes the filepath by the precision level but I don't think that's necessary  
 
 
+
 def _exists_in_azure(azure_manager:AzureBlobStorageManager, file_path:str) -> bool:
     """Checks the specified Azure storage container in the api_info.yaml if a specified file_path exists."""
     return os.path.basename(file_path) in azure_manager.list_blobs()
@@ -65,9 +66,7 @@ def _scrape_conversion_table(file_path:str) -> None:
                     line = state_dict['name'] + '|' + line + '\n'
                     out_file.write(line)
 
-                break
-
-def _get_tract_geoms_state(year:int, state:str) -> pd.DataFrame:
+def _get_tract_geoms_state() -> pd.DataFrame:
     """Loads tract geometries from pygris for all tracts in a given state and year."""
 
     tract_geoms = pygris.tracts(year=year, state=state)
@@ -112,8 +111,13 @@ def create_year_conversion_map(df:pd.DataFrame, start_year:int, end_year:int, de
 
     return year_conversion_map
 
+def init_mongo_db(): 
+    """Initialize MongoDB Database"""
+
 
 def main() -> None:
+    """Download the crosswalks between 2010 and 2020 census tracts with percentage overlaps"""
+
 
     ## Check azure container if files already exist
     with open('api_info.yaml', 'r') as file: 
@@ -165,6 +169,15 @@ def main() -> None:
     # Create maps from one year to the other
     map_10_to_20 = create_year_conversion_map(conversion_table, start_year=2010, end_year=2020, dec_to_round=OVERLAP_PRECISION)
     map_20_to_10 = create_year_conversion_map(conversion_table, start_year=2020, end_year=2010, dec_to_round=OVERLAP_PRECISION)
+
+    # Write to JSON row file 
+
     
 
 
+
+    ## TO-DO: 
+    # Decide on final data model
+    # Run script for all states and tracts  
+    # Write motebook demonstrating how to use the crosswalk map
+    # Change the README.md
