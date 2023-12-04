@@ -2,6 +2,7 @@ import pandas as pd
 import requests
 import geopandas as gpd 
 import pygris
+import json
 import sys
 import os
 import us 
@@ -11,21 +12,20 @@ import yaml
 import datetime as dt
 import shapely
 import numpy as np
+import sys, getopt
 
 
 DATA_DIR = 'data' 
-CONVERSION_PATH = os.path.join(DATA_DIR, 'tract_conversion_table_2010-2010_raw.csv') 
+CONVERSION_PATH = os.path.join(DATA_DIR, 'tract_conversion_table_2010-2010_raw.csv') # Path to save raw conversion table from census.gov (doesn't have percentage overlaps)
 # GEOMS_PATH = os.path.join(DATA_DIR, 'tract_conversion_table_2010-2010_geometries.json')
-OUTPUT_PATH = os.path.join(DATA_DIR, 'tract_conversion_table_2010-2010_processed-overlaps.csv')
+OUTPUT_PATHS = [os.path.join(DATA_DIR, fp) for fp in ('convert-ctracts_pct-area_2010-to-2020.json', 
+                                                      'convert-ctracts_pct-area_2020-to-2010.json')]
 OVERLAP_PRECISION = 3 # how many decimals you want to calculate the overlap with
 # ^^ Note that changing this value could cause your local version to deviate from the one in Azure 
-# I *coudld* write this so that it changes the filepath by the precision level but I don't think that's necessary  
+# I *could`d* write this so that it changes the filepath by the precision level but I don't think that's necessary  
+OVERWRITE_AZURE = True # Change this to overwrite the version in Azure
+OVERWRITE_LOCAL = True # Change this to overwrite your local version of the conversion map  
 
-
-
-def _exists_in_azure(azure_manager:AzureBlobStorageManager, file_path:str) -> bool:
-    """Checks the specified Azure storage container in the api_info.yaml if a specified file_path exists."""
-    return os.path.basename(file_path) in azure_manager.list_blobs()
 
 def _load_state_fips(): 
     """Load list of state fips and names from us module"""
@@ -66,7 +66,7 @@ def _scrape_conversion_table(file_path:str) -> None:
                     line = state_dict['name'] + '|' + line + '\n'
                     out_file.write(line)
 
-def _get_tract_geoms_state() -> pd.DataFrame:
+def _get_tract_geoms_state(year:int, state:str) -> pd.DataFrame:
     """Loads tract geometries from pygris for all tracts in a given state and year."""
 
     tract_geoms = pygris.tracts(year=year, state=state)
@@ -88,7 +88,7 @@ def _get_tract_geoms_state() -> pd.DataFrame:
 def _calc_pct_overlap(parent_geom, child_geom): 
     """Calculate percentage overlap between two geometries."""
 
-    percent_overlap = (parent_geom.intersection(child_geom).area / child_geom.area) * 100
+    percent_overlap = (parent_geom.intersection(child_geom).area / child_geom.area)
     return percent_overlap
 
 
@@ -111,13 +111,8 @@ def create_year_conversion_map(df:pd.DataFrame, start_year:int, end_year:int, de
 
     return year_conversion_map
 
-def init_mongo_db(): 
-    """Initialize MongoDB Database"""
-
-
 def main() -> None:
     """Download the crosswalks between 2010 and 2020 census tracts with percentage overlaps"""
-
 
     ## Check azure container if files already exist
     with open('api_info.yaml', 'r') as file: 
@@ -126,20 +121,20 @@ def main() -> None:
     azure_manager = AzureBlobStorageManager(connection_str=api_info['azure']['connection-str'], 
                                             container_name=api_info['azure']['container-name'], 
                                             download_dir=DATA_DIR)
-    if os.path.isfile(OUTPUT_PATH): 
-        logger.info(f'{OUTPUT_PATH} already exists locally. Aborting script.')
-        return
-    elif _exists_in_azure(OUTPUT_PATH):
-        logger.info(f'{os.path.basename(OUTPUT_PATH)} exists in Azure container ({azure_manager.container_name}) but not locally. Downloading to {DATA_DIR}/.')
-        start_time = dt.datetime.utcnow()
-        azure_manager.download_blob(OUTPUT_PATH)
-        end_time = dt.datetime.utcnow()
-        logger.info(f'Download complete ({(end_time - start_time).seconds})s')    
-        return 
-    
-    else:
-        logger.info(f'{OUTPUT_PATH} exists neither locally nor in Azure. Commencing script.')
-
+    for fp in OUTPUT_PATHS: 
+        if os.path.isfile(fp) and not OVERWRITE_LOCAL: 
+            logger.info(f'{os.path.basename(fp)} already exists locally. Skipping scrape/download.')
+            return
+        elif azure_manager.has_blob(fp) and not OVERWRITE_AZURE:
+            logger.info(f'{os.path.basename(fp)} found in Azure container ({azure_manager.container_name}) but not locally. Downloading to {DATA_DIR}/.')
+            start_time = dt.datetime.utcnow()
+            azure_manager.download_blob(os.path.basename(fp))
+            end_time = dt.datetime.utcnow()
+            logger.info(f'Download complete ({(end_time - start_time).seconds})s')    
+            return 
+        
+        else:
+            logger.info(f'Commencing script.')
 
     ## scrape / load conversion table 
     _scrape_conversion_table(CONVERSION_PATH)
@@ -170,14 +165,21 @@ def main() -> None:
     map_10_to_20 = create_year_conversion_map(conversion_table, start_year=2010, end_year=2020, dec_to_round=OVERLAP_PRECISION)
     map_20_to_10 = create_year_conversion_map(conversion_table, start_year=2020, end_year=2010, dec_to_round=OVERLAP_PRECISION)
 
-    # Write to JSON row file 
-
-    
-
-
+    ## Saving outputs: 
+    for fp, conversion_map in zip(OUTPUT_PATHS, (map_10_to_20, map_20_to_10)): 
+        # Locally 
+        with open (fp, 'w') as file: 
+            for row in conversion_map: 
+                json.dump(row, file)
+                file.write('\n')
+        # In Azure
+        azure_manager.upload_blob(fp, overwrite=OVERWRITE_AZURE)
 
     ## TO-DO: 
     # Decide on final data model
     # Run script for all states and tracts  
     # Write motebook demonstrating how to use the crosswalk map
     # Change the README.md
+
+if __name__ == "__main__":
+    main()
