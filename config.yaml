@@ -1,0 +1,20 @@
+data_dir: 'data' # where you want to download/store your files; will be created if it doesn't exist.
+
+tract_crosswalk:  
+  overlap_precision: 3 #  how many decimals' precision you want when calculating the tract geom overlaps. Default=3.
+  overwrite_azure: True # Whether to overwrite a crosswalk file of the same name in the specified Azure container. 
+  overwrite_local: True # Whether to overwrite any local copies of a crosswalk file with the same name. 
+
+api-info: 
+  azure: 
+    connection-str: DefaultEndpointsProtocol=https;AccountName=pipelinemapping;AccountKey=qfwleOJMSczRgtCrbvZjH+2FhLMvueAPfPrASGiT6KQo9nRZytcHgNs6zkHDZvAZnv6z+6g9PxD1+AStqUtaTg==;EndpointSuffix=core.windows.net
+    container-name: std-geoms
+    storage-acct-name: pipelinemapping
+  census: 
+    key: f22243111b808d4b0553207cefbc32b380a09b52
+census_vars: [] # give list of census variables which you want to download 
+start_year:
+end_year: 
+states: ['All'] # ['All'] or custom list of states (names, fips, or USPS accepted)
+
+

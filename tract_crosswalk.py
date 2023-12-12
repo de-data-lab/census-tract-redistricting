@@ -7,31 +7,28 @@ import sys
 import os
 import us 
 from logger import logger
-from utils import AzureBlobStorageManager
+from utils import AzureBlobStorageManager, load_state_list
 import yaml
 import datetime as dt
 import shapely
 import numpy as np
 import sys, getopt
+import yaml
 
+## --- Obtain crosswalk from Azure Container (if exists already) or create from scratch --- ##
 
 DATA_DIR = 'data' 
 CONVERSION_PATH = os.path.join(DATA_DIR, 'tract_conversion_table_2010-2010_raw.csv') # Path to save raw conversion table from census.gov (doesn't have percentage overlaps)
-# GEOMS_PATH = os.path.join(DATA_DIR, 'tract_conversion_table_2010-2010_geometries.json')
 OUTPUT_PATHS = [os.path.join(DATA_DIR, fp) for fp in ('convert-ctracts_pct-area_2010-to-2020.json', 
                                                       'convert-ctracts_pct-area_2020-to-2010.json')]
 OVERLAP_PRECISION = 3 # how many decimals you want to calculate the overlap with
 # ^^ Note that changing this value could cause your local version to deviate from the one in Azure 
-# I *could`d* write this so that it changes the filepath by the precision level but I don't think that's necessary  
+# I *could* write this so that it changes the filepath by the precision level but I don't think we need multiple versions at once  
 OVERWRITE_AZURE = True # Change this to overwrite the version in Azure
 OVERWRITE_LOCAL = True # Change this to overwrite your local version of the conversion map  
 
+## --------------------------------------------------------------------------------------- ##
 
-def _load_state_fips(): 
-    """Load list of state fips and names from us module"""
-    state_fips_map = [{"name":s.name, "fips":s.fips} for s in us.states.STATES] \
-        + [{'name':'District of Columbia', 'fips':'11'}] + [{'name':'Puerto Rico', 'fips':'72'}]
-    return state_fips_map
 
 
 def _scrape_conversion_table(file_path:str) -> None:
@@ -45,15 +42,14 @@ def _scrape_conversion_table(file_path:str) -> None:
         
         logger.info(f'{file_path} does not exist. Scraping from remote and writing to path.')
         
-        state_fips_map = _load_state_fips()
-
+        state_list = load_state_list()
 
         with open(file_path, 'w') as out_file: 
             headers = 'STATENAME' + '|' + 'OID_TRACT_20|GEOID_TRACT_20|NAMELSAD_TRACT_20|AREALAND_TRACT_20|AREAWATER_TRACT_20|MTFCC_TRACT_20|FUNCSTAT_TRACT_20|OID_TRACT_10|GEOID_TRACT_10|NAMELSAD_TRACT_10|AREALAND_TRACT_10|AREAWATER_TRACT_10|MTFCC_TRACT_10|FUNCSTAT_TRACT_10|AREALAND_PART|AREAWATER_PART'
             out_file.write(headers + '\n') 
-            for state_dict in state_fips_map: 
+            for state_dict in state_list: 
 
-                # Scrape file for specific state -- can't use national aggregate because it doesn't include a state column 
+                # Scrape file for specific state -- can't use national aggregate file because it doesn't include a state column 
                 url = 'https://www2.census.gov/geo/docs/maps-data/data/rel2020/tract/tab20_tract20_tract10_st' + state_dict['fips'] + '.txt'
                 conversion_table = requests.get(url)
 
@@ -65,6 +61,7 @@ def _scrape_conversion_table(file_path:str) -> None:
                     # Add state name  
                     line = state_dict['name'] + '|' + line + '\n'
                     out_file.write(line)
+
 
 def _get_tract_geoms_state(year:int, state:str) -> pd.DataFrame:
     """Loads tract geometries from pygris for all tracts in a given state and year."""
@@ -100,7 +97,6 @@ def create_year_conversion_map(df:pd.DataFrame, start_year:int, end_year:int, de
     start_geoid, end_geoid = f"GEOID_TRACT_{start_year_abrev}", f"GEOID_TRACT_{end_year_abrev}"
     pct_overlap_col = f'pct_overlap_{start_year_abrev}-to-{end_year_abrev}'
 
-
     # We can't use pd.pivot since the values for the widened columns aren't in the base df and the number of them needs to be calculate 
     year_conversion_map = df.groupby(['STATENAME', start_geoid])[[end_geoid, pct_overlap_col]] \
         .agg(list)\
@@ -115,7 +111,7 @@ def main() -> None:
     """Download the crosswalks between 2010 and 2020 census tracts with percentage overlaps"""
 
     ## Check azure container if files already exist
-    with open('api_info.yaml', 'r') as file: 
+    with open('config.yaml', 'r') as file: 
         api_info = yaml.full_load(file)
 
     azure_manager = AzureBlobStorageManager(connection_str=api_info['azure']['connection-str'], 
@@ -174,12 +170,6 @@ def main() -> None:
                 file.write('\n')
         # In Azure
         azure_manager.upload_blob(fp, overwrite=OVERWRITE_AZURE)
-
-    ## TO-DO: 
-    # Decide on final data model
-    # Run script for all states and tracts  
-    # Write motebook demonstrating how to use the crosswalk map
-    # Change the README.md
 
 if __name__ == "__main__":
     main()
