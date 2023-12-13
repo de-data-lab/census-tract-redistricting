@@ -4,6 +4,9 @@ import us
 import yaml 
 import re 
 from pygris.helpers import validate_state
+import json
+
+
 
 class AzureBlobStorageManager:
     def __init__(self, connection_str:str, container_name:str, download_dir="."):
@@ -142,3 +145,13 @@ def validate_config(config:dict) -> dict:
             error_messages['states'] = f'Invalid states provided ({invalid_states}).'
     
     return error_messages
+
+
+def read_json_rows(fp:str) -> list:
+    """Read JSON row file to list of dictionaries"""
+    output = []
+    with open(fp, 'r') as file: 
+        for line in file: 
+            json_row = json.loads(line.strip())
+            output.append(json_row)
+    return output

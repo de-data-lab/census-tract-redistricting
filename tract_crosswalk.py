@@ -7,7 +7,7 @@ import sys
 import os
 import us 
 from logger import logger
-from utils import AzureBlobStorageManager, load_state_list
+from utils import AzureBlobStorageManager, load_state_list, validate_config
 import yaml
 import datetime as dt
 import shapely
@@ -15,9 +15,19 @@ import numpy as np
 import sys, getopt
 import yaml
 
-## --- Obtain crosswalk from Azure Container (if exists already) or create from scratch --- ##
+# Load and validate parameters from config file 
+config_file = 'config.yaml'
+with open(config_file, 'r') as file: 
+    config = yaml.full_load(file)
 
-DATA_DIR = 'data' 
+validation_error_dict = validate_config(config)
+for param, error in validation_error_dict.items(): 
+    logger.error(f'{config_file} -- {param}: {error}')
+if len(validation_error_dict) > 0: 
+    raise Exception(f"Revise parameters in {config_file}")
+
+# Set parameters from config 
+DATA_DIR = config['data_dir']
 CONVERSION_PATH = os.path.join(DATA_DIR, 'tract_conversion_table_2010-2010_raw.csv') # Path to save raw conversion table from census.gov (doesn't have percentage overlaps)
 OUTPUT_PATHS = [os.path.join(DATA_DIR, fp) for fp in ('convert-ctracts_pct-area_2010-to-2020.json', 
                                                       'convert-ctracts_pct-area_2020-to-2010.json')]
