@@ -1,12 +1,11 @@
-from azure.storage.blob import BlobServiceClient, BlobClient, ContainerClient
+from azure.storage.blob import BlobServiceClient
 import os
 import us 
 import yaml 
-import re 
 from pygris.helpers import validate_state
 import json
-
-
+import pandas as pd 
+from logger import logger
 
 class AzureBlobStorageManager:
     def __init__(self, connection_str:str, container_name:str, download_dir="."):
@@ -155,3 +154,27 @@ def read_json_rows(fp:str) -> list:
             json_row = json.loads(line.strip())
             output.append(json_row)
     return output
+
+def df_to_print(df:pd.DataFrame, n_rows=5, index=False) -> str: 
+    """Write a pd.DataFrame to CSV string but with spaces between commas for clarity"""
+    output_str = ""
+    for line in df.to_csv(index=index).splitlines()[:min(n_rows, df.shape[0])]: 
+        output_str += line.replace(',', ', ') + "\n"
+    return output_str
+
+def apply_crosswalk(raw_values, overlaps) -> dict: 
+    """Create historical data for 2020 Tracts by multiplying past year's values by their respective crosswalk weights"""
+    output_dict = {}
+    for rv, ov in zip(raw_values, overlaps):
+        for tract_2020, pct in ov.items(): 
+            # Convert the raw values for the current 2020 census tract
+            pct = pct if pct <= 1 else pct / 100
+            converted_raw_values = {year:(val*pct).round(2) for year, val in rv.items()}
+            # Add values to the output dictionary 
+            if tract_2020 in output_dict.keys(): 
+                # Add to the values in the current dictionary
+                for year in output_dict[tract_2020].keys(): 
+                    output_dict[tract_2020][year] += converted_raw_values[year]
+            else: 
+                output_dict[tract_2020] = converted_raw_values
+    return output_dict

@@ -28,7 +28,8 @@ if len(validation_error_dict) > 0:
 
 # Set parameters from config 
 DATA_DIR = config['data_dir']
-CONVERSION_PATH = os.path.join(DATA_DIR, 'tract_conversion_table_2010-2010_raw.csv') # Path to save raw conversion table from census.gov (doesn't have percentage overlaps)
+os.makedirs(os.path.join(DATA_DIR, 'raw'), exist_ok=True)
+CONVERSION_PATH = os.path.join(DATA_DIR, 'raw', 'tract_conversion_table_2010-2010_raw.csv') # Path to save raw conversion table from census.gov (doesn't have percentage overlaps)
 OUTPUT_PATHS = [os.path.join(DATA_DIR, fp) for fp in ('convert-ctracts_pct-area_2010-to-2020.json', 
                                                       'convert-ctracts_pct-area_2020-to-2010.json')]
 OVERLAP_PRECISION = 3 # how many decimals you want to calculate the overlap with
@@ -46,7 +47,7 @@ def _scrape_conversion_table(file_path:str) -> None:
 
     ## Check if cached file exists already  
     if os.path.isfile(file_path): 
-        logger.info(f'{file_path} already exists. Skipping scrape.')
+        logger.info(f'{file_path} already exists. Skipping scrape from USCB.')
 
     else:
         
@@ -117,69 +118,76 @@ def create_year_conversion_map(df:pd.DataFrame, start_year:int, end_year:int, de
 
     return year_conversion_map
 
-def main() -> None:
-    """Download the crosswalks between 2010 and 2020 census tracts with percentage overlaps"""
+def get_tract_crosswalks() -> tuple:
+    """Download the crosswalks between 2010 and 2020 census tracts with percentage overlaps
+    
+    Returns: 
+
+    (tuple): The crosswalks in both directions 
+        TO-DO: Which direction you want the crosswalk in (one, other, both) should be a parameter in this function.
+    
+    """
 
     ## Check azure container if files already exist
     with open('config.yaml', 'r') as file: 
         api_info = yaml.full_load(file)
 
-    azure_manager = AzureBlobStorageManager(connection_str=api_info['azure']['connection-str'], 
-                                            container_name=api_info['azure']['container-name'], 
+    azure_manager = AzureBlobStorageManager(connection_str=api_info['api-info']['azure']['connection-str'], 
+                                            container_name=api_info['api-info']['azure']['container-name'], 
                                             download_dir=DATA_DIR)
     for fp in OUTPUT_PATHS: 
         if os.path.isfile(fp) and not OVERWRITE_LOCAL: 
             logger.info(f'{os.path.basename(fp)} already exists locally. Skipping scrape/download.')
-            return
         elif azure_manager.has_blob(fp) and not OVERWRITE_AZURE:
             logger.info(f'{os.path.basename(fp)} found in Azure container ({azure_manager.container_name}) but not locally. Downloading to {DATA_DIR}/.')
             start_time = dt.datetime.utcnow()
             azure_manager.download_blob(os.path.basename(fp))
             end_time = dt.datetime.utcnow()
             logger.info(f'Download complete ({(end_time - start_time).seconds})s')    
-            return 
-        
         else:
-            logger.info(f'Commencing script.')
+            logger.info(f"Commencing script (OVERWRITE_AZURE={config['tract_crosswalk']['overwrite_azure']}, OVERWRITE_LOCAL={config['tract_crosswalk']['overwrite_local']}).")
 
-    ## scrape / load conversion table 
-    _scrape_conversion_table(CONVERSION_PATH)
-    conversion_table = pd.read_csv(CONVERSION_PATH, sep='|', dtype={'GEOID_TRACT_10':str, 'GEOID_TRACT_20':str})
-    conversion_table = conversion_table[['STATENAME','GEOID_TRACT_10', 'GEOID_TRACT_20']]
+            ## scrape / load conversion table 
+            _scrape_conversion_table(CONVERSION_PATH)
+            conversion_table = pd.read_csv(CONVERSION_PATH, sep='|', dtype={'GEOID_TRACT_10':str, 'GEOID_TRACT_20':str})
+            conversion_table = conversion_table[['STATENAME','GEOID_TRACT_10', 'GEOID_TRACT_20']]
 
-    ## download geometries (TO-DO: change _get_tract_geoms_state() to return a list of dicts and then convert finished to dataframe after loop. Compare speed vs appending dataframes and concatenating like here)
-    geoms_10, geoms_20 = [], []  
-    for state in conversion_table['STATENAME'].unique():
-        geoms_10_state, geoms_20_state = _get_tract_geoms_state(state=state, year=2010), _get_tract_geoms_state(state=state, year=2020)
-        geoms_10.append(geoms_10_state)
-        geoms_20.append(geoms_20_state)
-    geoms_10 = pd.concat(geoms_10)
-    geoms_20 = pd.concat(geoms_20)
-    
+            ## download geometries (TO-DO: change _get_tract_geoms_state() to return a list of dicts and then convert finished to dataframe after loop. Compare speed vs appending dataframes and concatenating like here)
+            geoms_10, geoms_20 = [], []  
+            for state in conversion_table['STATENAME'].unique():
+                geoms_10_state, geoms_20_state = _get_tract_geoms_state(state=state, year=2010), _get_tract_geoms_state(state=state, year=2020)
+                geoms_10.append(geoms_10_state)
+                geoms_20.append(geoms_20_state)
+            geoms_10 = pd.concat(geoms_10)
+            geoms_20 = pd.concat(geoms_20)
+            
 
-    # Join to the conversion table 
-    conversion_table = conversion_table\
-        .merge(geoms_10, how='left', left_on='GEOID_TRACT_10', right_index=True)\
-        .merge(geoms_20, how='left', left_on='GEOID_TRACT_20', right_index=True)
+            # Join to the conversion table 
+            conversion_table = conversion_table\
+                .merge(geoms_10, how='left', left_on='GEOID_TRACT_10', right_index=True)\
+                .merge(geoms_20, how='left', left_on='GEOID_TRACT_20', right_index=True)
 
-    # Calculate percent overlap bidirectionally 
-    conversion_table[['pct_overlap_10-to-20', 'pct_overlap_20-to-10']] = conversion_table\
-        .apply(lambda row: pd.Series([_calc_pct_overlap(row['geometry_10'], row['geometry_20']), 
-                                        _calc_pct_overlap(row['geometry_20'], row['geometry_10'])]), axis=1)
-        
-    # Create maps from one year to the other
-    map_10_to_20 = create_year_conversion_map(conversion_table, start_year=2010, end_year=2020, dec_to_round=OVERLAP_PRECISION)
-    map_20_to_10 = create_year_conversion_map(conversion_table, start_year=2020, end_year=2010, dec_to_round=OVERLAP_PRECISION)
+            # Calculate percent overlap bidirectionally 
+            conversion_table[['pct_overlap_10-to-20', 'pct_overlap_20-to-10']] = conversion_table\
+                .apply(lambda row: pd.Series([_calc_pct_overlap(row['geometry_10'], row['geometry_20']), 
+                                                _calc_pct_overlap(row['geometry_20'], row['geometry_10'])]), axis=1)
+                
+            # Create maps from one year to the other
+            map_10_to_20 = create_year_conversion_map(conversion_table, start_year=2010, end_year=2020, dec_to_round=OVERLAP_PRECISION)
+            map_20_to_10 = create_year_conversion_map(conversion_table, start_year=2020, end_year=2010, dec_to_round=OVERLAP_PRECISION)
 
-    ## Saving outputs: 
-    for fp, conversion_map in zip(OUTPUT_PATHS, (map_10_to_20, map_20_to_10)): 
-        # Locally 
-        with open (fp, 'w') as file: 
-            for row in conversion_map: 
-                json.dump(row, file)
-                file.write('\n')
-        # In Azure
-        azure_manager.upload_blob(fp, overwrite=OVERWRITE_AZURE)
+            ## Saving outputs: 
+            for fp, conversion_map in zip(OUTPUT_PATHS, (map_10_to_20, map_20_to_10)): 
+                # Locally 
+                with open (fp, 'w') as file: 
+                    for row in conversion_map: 
+                        json.dump(row, file)
+                        file.write('\n')
+                # In Azure
+                azure_manager.upload_blob(fp, overwrite=OVERWRITE_AZURE)
+
+    # Return the crosswalk paths (for access in main.py)
+    return (map_10_to_20, map_20_to_10)
 
 if __name__ == "__main__":
-    main()
+    get_tract_crosswalks()
