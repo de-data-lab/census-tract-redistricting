@@ -10,7 +10,7 @@ This branch (WIP) contains scripts for downloading US Census data from multiple 
 ├── config.yaml
 ├── example-use-notebook.ipynb
 ├── tract_crosswalk.py
-├── main.py
+├── census_data.py
 ├── logger.py
 ├── utils.py
 └── requirements.txt
@@ -52,11 +52,11 @@ To find the Azure connection string and container name, search for the storage a
 
 Sign up for a Census API Key [here](https://api.census.gov/data/key_signup.html). 
 
-#### *main.py*
+#### *census_data.py*
 Downloads tract-level data from the US Census API and uses the crosswalk file to map data from past-years tracts to current-year tracts. Specify desired census variables, states, and years in `config.yaml`.
 
 #### *tract_crosswalk.py*
-Downloads the tract area crosswalk (it's run already in `main.py` so no need to run this separately)., 
+Downloads the tract area crosswalk (it's run already in `census_data.py` so no need to run this separately)., 
 
 The USCB has [files](https://www2.census.gov/geo/docs/maps-data/data/rel2020/tract/) explaining which tracts from 2010 overlap with tracts from 2020, but it does not state how much the tracts overlap. So while this file is essential to narrow down the amount of calculations we need to do, we still need to calculate the overlaps ourselves.
 

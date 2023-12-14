@@ -6,6 +6,8 @@ from pygris.helpers import validate_state
 import json
 import pandas as pd 
 from logger import logger
+from collections import Counter 
+
 
 class AzureBlobStorageManager:
     def __init__(self, connection_str:str, container_name:str, download_dir="."):
@@ -17,7 +19,6 @@ class AzureBlobStorageManager:
 
         # The default directory to which to download a blob.
         self.download_dir = download_dir
-
 
     def upload_blob(self, file_name:str,  blob_name=None, overwrite=False) -> None:
         """Upload a local file to blob storage in Azure"""
@@ -103,6 +104,30 @@ def load_state_list(states=['All'], include_dc=True, include_pr=False) -> list:
     
     return state_list
 
+def construct_raw_census_output_path() -> str: 
+    """Construct the output path for the raw census download based on config.yaml"""
+
+    with open('config.yaml', 'r') as file: 
+        config = yaml.full_load(file)
+    
+    state_list = load_state_list()
+
+    if config['states'] == ['All']: 
+        state_str = 'allStates'
+    elif len(config['states']) < 8:
+        state_str = '-'.join([s['usps'] for s in state_list if any(s[k] in config['states'] for k in ('name', 'fips', 'usps'))])
+    else: 
+        state_str = f"{len(config['states'])}-States"      
+  
+    if config['include_dc']: 
+        state_str += '+DC'
+    if config['include_pr']: 
+        state_str += '+PR'
+
+    output_file = '-'.join(config['census_vars']) + '_' + state_str + f'_{config["start_year"]}-{config["end_year"]}.csv'
+
+    return os.path.join(config['data_dir'], 'raw', output_file)
+
 
 def validate_config(config:dict) -> dict:
     """Validate the parameter values in config.yaml
@@ -125,6 +150,9 @@ def validate_config(config:dict) -> dict:
     # census variable selection
     if (not isinstance(config['census_vars'], list)) or (len(config['census_vars']) == 0): 
         error_messages['census_vars'] = 'Provide non-empty list of valid census variables.'
+    dup_vars = [k for k,v in Counter(config['census_vars']).items() if v > 1]
+    if len(dup_vars) > 0:
+        error_messages['census_vars'] = f'Enter each census variable only once ({dup_vars})'
 
     # year selection
     if any(config[y] not in range(2010, 2021) for y in ('start_year', 'end_year')): 
@@ -137,11 +165,18 @@ def validate_config(config:dict) -> dict:
         invalid_states = []
         for s in config['states']: 
             try: 
-                validate_state(s)
+                validate_state(s, quiet=True)
             except ValueError as e: 
                 invalid_states.append(s)
-        else: 
-            error_messages['states'] = f'Invalid states provided ({invalid_states}).'
+        if len(invalid_states) > 0:
+            error_messages['states'] = f'{invalid_states}'
+
+    # log results
+    if len(error_messages.items()) > 0: 
+        logger.info(error_messages)
+        for param, error in error_messages.items(): 
+            logger.error(f'config.yaml -- {param}: {error}')
+        raise Exception(f"Revise parameters in config.yaml")
     
     return error_messages
 
@@ -162,19 +197,59 @@ def df_to_print(df:pd.DataFrame, n_rows=5, index=False) -> str:
         output_str += line.replace(',', ', ') + "\n"
     return output_str
 
-def apply_crosswalk(raw_values, overlaps) -> dict: 
-    """Create historical data for 2020 Tracts by multiplying past year's values by their respective crosswalk weights"""
-    output_dict = {}
-    for rv, ov in zip(raw_values, overlaps):
-        for tract_2020, pct in ov.items(): 
-            # Convert the raw values for the current 2020 census tract
-            pct = pct if pct <= 1 else pct / 100
-            converted_raw_values = {year:(val*pct).round(2) for year, val in rv.items()}
-            # Add values to the output dictionary 
-            if tract_2020 in output_dict.keys(): 
-                # Add to the values in the current dictionary
-                for year in output_dict[tract_2020].keys(): 
-                    output_dict[tract_2020][year] += converted_raw_values[year]
-            else: 
-                output_dict[tract_2020] = converted_raw_values
-    return output_dict
+
+
+def std_fips(fips_code, geog=None) -> str:
+    """Standardize a FIPS code based on what level geography it represents. Supports State, County, Tract, and Block.
+
+    Args: 
+
+    fips_code (float, int, numeric type str): The FIPS code to standardize 
+
+    geog (str): The geography level of the FIPS code ("state", "county", "tract", "block")
+
+    Returns:
+
+    fips_std (str): A standardized str version of the FIPS code. Standardization involves removing trailing decimals and the following zero-fill rules:
+
+        "state": 2-digit zero fill 
+        "county": 3 digits
+        "tract": 6 digits
+        "block": 4 digits 
+
+    Errors:
+    If geog not a valid geography level ("state", "county", "tract", "block")
+    IF the FIPS code is not a valid numeric type.
+    If the FIPS code has non-zero trailing digits after a decimal.  
+    If the FIPS code has more digits than the standard number for the specified geography. 
+
+    Example Usage:
+
+    df['STATEFP'] = df['STAFEP'].apply(std_fips(geog="state"))
+    """
+
+    n_digits = {"state":2, "county":3, "tract":6, "block":4}
+
+    
+    if geog is None or geog not in n_digits.keys(): 
+        raise Exception('Must specify valid value for geog ("state", "county", "tract", "block")')
+    
+    fips_str = str(fips_code).strip()
+
+    ## TO-DO: fix numeric type validation
+    # if not fips_str.isnumeric():
+    #     logger.info(fips_str.isnumeric())
+    #     logger.info(fips_str)
+    #     logger.info(f'type: {type(fips_code)}')
+    #     raise Exception(f"{fips_code} is not a valid numeric type")
+    # elif len(fips_str) > n_digits[geog]:
+    #     raise Exception(f"{fips_code} has too many digits for a {geog}-level FIPS code ({n_digits[geog]})")
+
+    # decimal_index = fips_str.find(".")
+    # if decimal_index != -1:
+    #     if any(x != "0" for x in fips_str[decimal_index:]): 
+    #         raise Exception(f"{fips_code} has non-zero trailing digits")
+    #     else: 
+    #         fips_str = fips_str[:decimal_index]
+    
+    return fips_str.zfill(n_digits[geog])

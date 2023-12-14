@@ -1,0 +1,23 @@
+data_dir: 'data' # where you want to download/store your files; will be created if it doesn't exist.
+# data_dir/raw -- will be created to hold any raw files downloaded from the census api
+
+tract_crosswalk:  # tract_crosswalk.py
+  overlap_precision: 3 #  how many decimals' precision you want when calculating the tract geom overlaps. Default=3.
+  overwrite_azure: False # Whether to overwrite a crosswalk file of the same name in the specified Azure container. 
+  overwrite_local: False # Whether to overwrite any local copies of a crosswalk file with the same name. 
+main:  # census_data.py
+  overwrite_local: False # Whether to overwrite any local copies of raw and transformed data downloaded from the Census API. 
+api-info: 
+  azure: 
+    connection-str:
+    container-name: 
+    storage-acct-name: pipelinemapping
+  census: 
+    key: f22243111b808d4b0553207cefbc32b380a09b52
+census_vars: ['B01001A_012E','B01001A_017E'] #  'B00001_001E', give list of census variables which you want to download 
+start_year: 2010
+end_year: 2020
+states: ['All'] # ['All'] or custom list of states (names, fips, or USPS accepted)
+include_dc: True # Whether to include tracts from DC
+include_pr: False # Whether to include tracts from Puerto Rico 
+
