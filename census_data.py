@@ -153,7 +153,7 @@ def _transform_raw_data_long(raw_df:pd.DataFrame) -> pd.DataFrame:
 
     df = raw_df.copy()
 
-    logger.info(f'Raw Census data in {RAW_CENSUS_OUTPUT}:\n{utils.df_to_print(df)}{df.shape}\n')
+    logger.debug(f'Raw Census data in {RAW_CENSUS_OUTPUT}:\n{utils.df_to_print(df)}{df.shape}\n')
 
     # Set data types
     df.dtypes
@@ -184,11 +184,11 @@ def _transform_raw_data_long(raw_df:pd.DataFrame) -> pd.DataFrame:
     rows_w_negative = df[df[CENSUS_VARS].apply(lambda row: any(val < 0 for val in row.values), axis=1)]
     n_rows_w_negative = rows_w_negative.shape[0]
     if n_rows_w_negative > 0: 
-        logger.info(f'{n_rows_w_negative} rows have negative placeholder values for census variables:\n {utils.df_to_print(rows_w_negative.value_counts().reset_index())}')
-        logger.info(f'Replacing these values with NaN.')
-        df[CENSUS_VARS] = df[CENSUS_VARS].applymap(lambda x: np.nan if x < 0 else x)
+        logger.debug(f'{n_rows_w_negative} rows have negative placeholder values for census variables:\n {utils.df_to_print(rows_w_negative.value_counts().reset_index())}')
+        # logger.info(f'Replacing these values with NaN.')
+        # df[CENSUS_VARS] = df[CENSUS_VARS].applymap(lambda x: np.nan if x < 0 else x)
     nan_counts = df.isna().sum()
-    logger.info(f'NaN counts:\n {utils.df_to_print(nan_counts)}')
+    logger.debug(f'NaN counts:\n {utils.df_to_print(nan_counts)}')
 
     # Handle Duplicates
     dups = df[df.duplicated()]
@@ -219,90 +219,105 @@ def _extract_2020_data(wide_df:pd.DataFrame) -> pd.DataFrame:
     before applying the crosswalk. After widening/collapsing the pre-2020 tract data and assigning it to 2020 tract, we will re-join the 2020 data to it.  
     """
 
-    df_2020 = wide_df.filter(regex='2020') 
+    df_2020 = wide_df.filter(regex='2020')
     wide_df.drop(df_2020.columns, axis=1, inplace=True)
 
-    return df_2020
+    # Drop nans (TO-DO: Write functions to monitor/log where nans) are being introduced vs. raw from census API
+
+    return df_2020.reset_index()
 
 
-def _collapse_df(wide_df:pd.DataFrame) -> pd.DataFrame:
+def _collapse_df(df_to_collapse:pd.DataFrame) -> pd.DataFrame:
     """Collapse the census variable columns for pre-2020 tracts."""
-    df = wide_df.copy()
-    # # Collapse the columns in the pre-2020 dataframe  
-    # for var in CENSUS_VARS: 
-    #     var_year_columns = df.filter(regex=var).columns
-    #     df[var] = df[var_year_columns] \
-    #         .apply(lambda row: {str(col.split('-')[1]):np.round(row_value, 2) for col, row_value in row.items()}, axis=1)
-    #     df.drop(var_year_columns, axis=1, inplace=True)
+    df = df_to_collapse.copy()
 
     for var in CENSUS_VARS: 
         logger.info(var)
         var_year_columns = df.filter(regex=var).columns
         df[var] = df[var_year_columns] \
             .apply(lambda row: {str(col.split('-')[1]): np.round(row_value, 2) for col, row_value in row.items()}
-                if not all(np.isnan(row.values)) else {}, axis=1)
+                if not all(np.isnan(row.values)) else np.nan, axis=1)
         df.drop(var_year_columns, axis=1, inplace=True)
 
     logger.info(f'Collapsed pre-2020 data: \n{utils.df_to_print(df)}\n{df.shape}')
     return df
 
-def multiply_pct_overlaps(raw_values, overlaps) -> dict: 
-    """Create historical data for 2020 Tracts by multiplying past year's values by their respective crosswalk weights
-    Currently works only on one variable at a time (TO-DO)
 
-    Args: 
-
-    raw_values (pd.Series): The column of raw historical values nested as a JSON struct ({<year_n>:<variable_value>, ...})
-    
-    overlaps (pd.Series): The column of percentage overlaps with 2020 tract GEOIDs ({<GEOID_TRACT_20_n>:<percent_overlap>, ...})
-        (joined by join_crosswalk)
-
-    Returns: 
-
-    df_crosswalk (dict): Historical yearly values for the overlapping 2020 tracts.
-    
-    """
-    output_dict = {}
-    for rv, ov in zip(raw_values, overlaps):
-        logger.debug(rv)
-        for tract_2020, pct in ov.items(): 
-            # Convert the raw values for the current 2020 census tract
-            pct = pct if pct <= 1 else pct / 100
-            converted_raw_values = {year:(val*pct).round(2) for year, val in rv.items()}
-            # Add values to the output dictionary 
-            if tract_2020 in output_dict.keys(): 
-                # Add to the values in the current dictionary
-                for year in output_dict[tract_2020].keys(): 
-                    output_dict[tract_2020][year] += converted_raw_values[year]
-            else: 
-                output_dict[tract_2020] = converted_raw_values
-    return output_dict
-
-def join_crosswalk(collapse_df:pd.DataFrame) -> pd.DataFrame: 
-    """Join the crosswalk/pct-overlap column to the widened dataframe and multiply the census variable columns by their weights."""
+def join_crosswalk(collapse_df:pd.DataFrame, how='inner') -> pd.DataFrame: 
+    """Join the crosswalk/pct-overlap column to the widened dataframe and multiply the census variable columns by their weights"""
 
     # Load crosswalk from 2010 to 2020
     df_map_10_to_20 = pd.DataFrame(load_crosswalk_2010_2020(reverse=False)).set_index(['GEOID_TRACT_10']).drop(['STATENAME'], axis=1)
     
-    # Create column for join 
-    joined = collapse_df.merge(df_map_10_to_20, how='left', left_on=['GEOID'], right_index=True)
+    joined = collapse_df.merge(df_map_10_to_20, how=how, left_on=['GEOID'], right_index=True)
+
+    # Drop nans (TO-DO: Write functions to monitor/log where nans) are being introduced vs. raw from census API
 
 
     return joined 
 
 
+def multiply_pct_overlaps(values_2010, weights_2020) -> pd.DataFrame: 
+    """Create historical data for 2020 Tracts by multiplying past year's values by their respective crosswalk weights
+    Currently works only on one variable at a time.
+
+    Args: 
+
+    values_2010 (pd.Series): The column of raw historical values nested as a JSON struct ({<year_n>:<variable_value>, ...})
+    
+    weights_2020 (pd.Series): The column of percentage weights_2020 with 2020 tract GEOIDs ({<GEOID_TRACT_20_n>:<percent_overlap>, ...})
+        (joined by join_crosswalk)
+
+    Returns: 
+
+    df_crosswalk (pd.DataFrame): Historical yearly values for the overlapping 2020 tracts.
+    
+    """
+
+    output_dict = {}
+    for val_10_dict, ov in zip(values_2010, weights_2020):
+        # Skip if the raw values column is nan for this 2020 tract (i.e. we couldn't obtain data for this variable and year in the Census API)
+        if not isinstance(val_10_dict,dict): 
+            continue
+        # logger.debug(val_10_dict)
+        # logger.debug(ov)
+        for tract_2020, pct in ov.items(): 
+            # Convert the historical values of the given pre-2010 tract to its equivalent 2020 census tract 
+            pct = pct if pct <= 1 else pct / 100
+            converted_values_2010 = {year:np.round((val*pct),2) for year, val in val_10_dict.items()}
+            # Add values to the output dictionary 
+            if tract_2020 in output_dict.keys(): 
+                # Add to the values in the current dictionary
+                for year in output_dict[tract_2020].keys(): 
+                    try: 
+                        output_dict[tract_2020][year] += converted_values_2010[year]
+                    except: 
+                        logger.debug(output_dict)
+            else: 
+                output_dict[tract_2020] = converted_values_2010
+    return output_dict
+
+
 def apply_crosswalk(joined): 
-    # Apply/multiply crosswalks
+    """Apply the crosswalk in the joined dataframe"""
     dataframes = []
     for cvar in CENSUS_VARS:
         var_df = pd.DataFrame(multiply_pct_overlaps(joined[cvar],joined['GEOID_TRACT_20_overlap'])).T.rename_axis('GEOID_TRACT_20')
         var_df.columns = [cvar + "-" + str(col) for col in var_df.columns]
         dataframes.append(var_df)
+        
     df = pd.concat(dataframes, axis=1)
 
     # Collapse
     df = _collapse_df(df)
     return df
+
+
+# def rejoin_2020(df:pd.DataFrame, df_2020:pd.DataFrame):
+#     """Rejoin the dataframe from 2020 to the crosswalked dataframe """
+#     joined = df.join()
+
+
 
 
 
@@ -320,7 +335,7 @@ def apply_crosswalk(joined):
 
 # # Multiply past values by crosswalk  
 # for var in CENSUS_VARS: 
-#     utils.multiply_pct_overlaps(joined[var], joined['GEOID_TRACT_20_overlap'])
+#     utils.multiply_pct_weights_2020(joined[var], joined['GEOID_TRACT_20_overlap'])
     
 
 
@@ -335,15 +350,23 @@ def main() -> None:
         df = pd.read_csv(RAW_CENSUS_OUTPUT)
 
     ## Transform raw data (long format)
-    _transform_raw_data_long(df)
+    df = _transform_raw_data_long(df)
 
+    ## Widen data 
+    df = _widen_df(df)
+    
     ## Separate 2020 data from other years
     df_2020 = _extract_2020_data(df)
 
-    ## Widen and collapse pre-2020 data
-    df = _widen_and_collapse(df)
+    ## Collapse pre-2020 data 
+    df = _collapse_df(df)
 
-    ## Apply years crosswalk to pre-2020 data 
+    ## Join and apply the crosswalk column to the pre-2020 data
+    df = join_crosswalk(df)
+    df = apply_crosswalk(df)
+
+    ## Re-Join the 2020 data 
+    df.join(df_2020, how='left')
 
 
     ## Re-join 2020 data to crosswalked pre-2020 data 
