@@ -104,29 +104,57 @@ def load_state_list(states=['All'], include_dc=True, include_pr=False) -> list:
     
     return state_list
 
-def construct_raw_census_output_path() -> str: 
-    """Construct the output path for the raw census download based on config.yaml"""
+
+def _param_sum_str(include_cvars=True, include_states=True, include_years=True) -> str: 
+    """Summarize parameters in config (for constructing file paths)."""
 
     with open('config.yaml', 'r') as file: 
         config = yaml.full_load(file)
-    
-    state_list = load_state_list()
 
-    if config['states'] == ['All']: 
-        state_str = 'allStates'
-    elif len(config['states']) < 8:
-        state_str = '-'.join([s['usps'] for s in state_list if any(s[k] in config['states'] for k in ('name', 'fips', 'usps'))])
-    else: 
-        state_str = f"{len(config['states'])}-States"      
-  
-    if config['include_dc']: 
-        state_str += '+DC'
-    if config['include_pr']: 
-        state_str += '+PR'
+    param_sum_str = ''
 
-    output_file = '-'.join(config['census_vars']) + '_' + state_str + f'_{config["start_year"]}-{config["end_year"]}.csv'
+    if include_cvars: 
+        param_sum_str += '-'.join(config['census_vars'])
 
-    return os.path.join(config['data_dir'], 'raw', output_file)
+    if include_states: 
+        state_list = load_state_list()
+        
+        if config['states'] == ['All']: 
+            state_str = 'allStates'
+        elif len(config['states']) < 8:
+            state_str = '-'.join([s['usps'] for s in state_list if any(s[k] in config['states'] for k in ('name', 'fips', 'usps'))])
+        else: 
+            state_str = f"{len(config['states'])}-States"      
+
+        if config['include_dc']: 
+            state_str += '+DC'
+        if config['include_pr']: 
+            state_str += '+PR'
+
+        param_sum_str += "_" + state_str
+
+    if include_years:
+        param_sum_str += f'_{config["start_year"]}-{config["end_year"]}'
+
+    # param_sum_str = state_str + f'_{config["start_year"]}-{config["end_year"]}'
+    return param_sum_str
+
+
+def construct_raw_census_path() -> str: 
+    """Construct the path for the data downloaded from the Census API for the variables and years specified in config.yaml"""
+
+    with open('config.yaml', 'r') as file: 
+        config = yaml.full_load(file)
+
+    return os.path.join(config['data_dir'], 'raw', _param_sum_str() + '.csv')
+
+def construct_geojson_output_path() -> str: 
+    """Construct the output path for the geojson produced by census_data.py based on config.yaml"""
+
+    with open('config.yaml', 'r') as file: 
+        config = yaml.full_load(file)
+
+    return  os.path.join(config['data_dir'], _param_sum_str() +'.json')
 
 
 def validate_config(config:dict) -> dict:
@@ -253,3 +281,19 @@ def std_fips(fips_code, geog=None) -> str:
     #         fips_str = fips_str[:decimal_index]
     
     return fips_str.zfill(n_digits[geog])
+
+
+def validate_transformation(): 
+    """Validate the outcome of a dataframe transformation"""
+
+
+def nan_counts(df): 
+    df.isna().sum()
+
+
+def replace_dict_nans(d:dict, nan_fill='NaN'):
+    """Replace nans in a dictionary with None"""
+    if isinstance(d, dict):
+        return {k: (v if not pd.isna(v) else nan_fill) for k, v in d.items()}
+    else:
+        return d

@@ -2,7 +2,7 @@ import json
 import yaml
 import pandas as pd 
 import geopandas
-import pygris 
+import pygris
 from census import Census 
 import utils 
 from logger import logger
@@ -12,7 +12,7 @@ import numpy as np
 import geopandas as gpd
 import datetime as dt
 
-from tract_crosswalk import get_tract_crosswalks, load_crosswalk_2010_2020
+from tract_crosswalk import get_tract_crosswalks, load_crosswalk_2010_2020, get_all_tract_geoms_year
 
 ## Load and validate parameters from config file 
 config_file = 'config.yaml'
@@ -26,7 +26,7 @@ YEARS = range(config['start_year'], config['end_year']+1)
 STATES = utils.load_state_list(config['states'])
 DOWNLOAD_DIR = config['data_dir']
 os.makedirs(os.path.join(DOWNLOAD_DIR, 'raw'), exist_ok=True) 
-RAW_CENSUS_OUTPUT = utils.construct_raw_census_output_path()
+RAW_CENSUS_OUTPUT = utils.construct_raw_census_path()
 OVERWRITE_LOCAL = config['main']['overwrite_local']
 
 # Set API parameters
@@ -49,102 +49,109 @@ def check_raw_census_download() -> bool:
     proceed_download = False 
     os.makedirs(os.path.join(DOWNLOAD_DIR, 'raw'), exist_ok=True) 
     if os.path.isfile(RAW_CENSUS_OUTPUT):
-        
-        if OVERWRITE_LOCAL: 
-            # First check if all the states in the existing output file match those currently specified in the config.yaml file  
-            df = pd.read_csv(RAW_CENSUS_OUTPUT)
-            if (df.shape[0] == 0) or any(col not in df.columns for col in ('state_name', 'year')): 
-                logger.warning(f'Output file of same name exists already ({RAW_CENSUS_OUTPUT}), but data is missing (file empty or columns missing:\n{utils.df_to_print(df)}). Proceeding with download.')
-                proceed_download = True  
-            else: 
-                df_states = df['state_name'].unique()
-                df_years = df['year'].unique()
+        logger.info(f'Found raw census data {RAW_CENSUS_OUTPUT}')        
+        if not OVERWRITE_LOCAL: 
+            pass
+            ## TO-DO: fix schema checks 
+            # # First check if all the states in the existing output file match those currently specified in the config.yaml file  
+            # df = pd.read_csv(RAW_CENSUS_OUTPUT)
+            # if (df.shape[0] == 0) or any(col not in df.columns for col in ('state_name', 'year')): 
+            #     logger.warning(f'Output file of same name exists already ({RAW_CENSUS_OUTPUT}), but data is missing (file empty or columns missing:\n{utils.df_to_print(df)}). Proceeding with download.')
+            #     proceed_download = True  
+            # else: 
+            #     df_states = df['state_name'].unique()
+            #     df_years = df['year'].unique()
 
-                if all(var in df.columns for var in CENSUS_VARS) \
-                    and all(state in df_states for state in STATES)\
-                    and all(year in df_states for year in YEARS): 
-                        logger.info(f'Specified census variables, years, and states already downloaded in {RAW_CENSUS_OUTPUT}. Skipping download.')
-                else: 
-                    logger.info(f'Output file of same name exists already ({RAW_CENSUS_OUTPUT}), but contains different states/years/census variables from what\'s specified. Proceeding with download.')
-                    proceed_download = True  
+            #     if all(var in df.columns for var in CENSUS_VARS) \
+            #         and all(state in df_states for state in STATES)\
+            #         and all(year in df_states for year in YEARS): 
+            #             logger.info(f'Specified census variables, years, and states already downloaded in {RAW_CENSUS_OUTPUT}. Skipping download.')
+            #     else: 
+            #         logger.info(f'Output file of same name exists already ({RAW_CENSUS_OUTPUT}), but contains different states/years/census variables from what\'s specified. Proceeding with download.')
+            #         proceed_download = True  
                 
-                # clear memory after checking file
-                del df_states
-                del df_years
-                del df
+            #     # clear memory after checking file
+            #     del df_states
+            #     del df_years
+            #     del df
         else: 
             logger.info(f"{RAW_CENSUS_OUTPUT} exists already, but `config['main']['overwrite_local']`== True. Proceeding with download.")
             proceed_download = True
-
+    else: 
+        logger.info(f'{RAW_CENSUS_OUTPUT} does not exist. Proceed with download.')
+        proceed_download = True
     return proceed_download
      
 
-def download_raw_data() -> pd.DataFrame: 
-    """Download (mostly) raw census data from Census API and return as DataFrame
+def load_raw_census_data() -> pd.DataFrame: 
+    """Download raw census data from Census API and return as DataFrame
         - Inserts additional columns
     """
-    logger.info(f'Downloading {CENSUS_VARS} from {YEARS[0]} to {YEARS[-1]}: {RAW_CENSUS_OUTPUT}')
+    proceed_download = check_raw_census_download()
+    if proceed_download: 
+        logger.info(f'Downloading {CENSUS_VARS} from {YEARS[0]} to {YEARS[-1]}: {RAW_CENSUS_OUTPUT}')
 
-    dataframes = []
-    failed_downloads = []
-    max_retries = 2
+        dataframes = []
+        failed_downloads = []
+        max_retries = 2
 
-    std_cols = ['']
-
-    for state in STATES: 
-        n = 0 
-        retries = 0    
-        while (n < len(YEARS)):  
-        
-            raw_year_data = None
-            year = YEARS[n]
-    
-            try: 
+        for state in STATES: 
+            n = 0 
+            retries = 0    
+            while (n < len(YEARS)):  
             
-                start_time = dt.datetime.utcnow()
-                
-                raw_year_data = c.acs5.state_county_tract(fields = ['NAME'] + CENSUS_VARS,
-                                                    state_fips = state['fips'], 
-                                                    county_fips = "*",
-                                                    tract="*",
-                                                    year=year) # will need to separate 2020 from pre-2020 (tracts w/ same GEOID are not equivalent)
-                df = pd.DataFrame(raw_year_data)
-                
-                # Insert additional columns
-                df['year'] = year
-                df['state_usps'] = state['usps']                
-
-
-                dataframes.append(df)
-                n += 1 
-                retries = 0
-
-                end_time = dt.datetime.utcnow()
-
-                elapsed_time = np.round((end_time - start_time).seconds, 2)
-
-                logger.info(f"Downloaded ({state['usps']}, {str(year)}, {elapsed_time}s, {df.shape[0]} rows, {df.memory_usage(deep=True).sum() / (1024 ** 2)}MB)")
-                logger.info(f'{utils.df_to_print(df.head(1))}')
-
-            except Exception as e:
-                retries += 1
-                logger.warning(f"({state['usps']}, {str(year)}): {str(e)} (Retrying {retries}/{max_retries})")
+                raw_year_data = None
+                year = YEARS[n]
         
-            if (raw_year_data is None) and (retries == max_retries):
-                logger.warning(f"Failed download {retries}/{max_retries} -- skipping to next year")
-                n += 1 
-                retries = 0 
-                failed_downloads.append({'state_name':state['name'], 'year':year, 'vars':CENSUS_VARS}) 
+                try: 
+                
+                    start_time = dt.datetime.utcnow()
+                    
+                    raw_year_data = c.acs5.state_county_tract(fields = ['NAME'] + CENSUS_VARS,
+                                                        state_fips = state['fips'], 
+                                                        county_fips = "*",
+                                                        tract="*",
+                                                        year=year) # will need to separate 2020 from pre-2020 (tracts w/ same GEOID are not equivalent)
+                    df = pd.DataFrame(raw_year_data)
+                    
+                    # Insert additional columns
+                    df['year'] = year
+                    df['state_usps'] = state['usps']                
 
-    # Log successes/failures
-    df = pd.concat(dataframes)
-    logger.info(f"Total Download: {df.shape[0]} rows, {df.memory_usage(deep=True).sum() / (1024 ** 2)}MB")
-    if len(failed_downloads) > 0: 
-        failed_downloads_print = "\n".join(failed_downloads)
-        logger.warning(f'{len(failed_downloads)} failed downloads:\n{failed_downloads_print}')
 
-    # Store raw census download 
-    df.to_csv(RAW_CENSUS_OUTPUT)
+                    dataframes.append(df)
+                    n += 1 
+                    retries = 0
+
+                    end_time = dt.datetime.utcnow()
+
+                    elapsed_time = np.round((end_time - start_time).seconds, 2)
+
+                    logger.info(f"Downloaded ({state['usps']}, {str(year)}, {elapsed_time}s, {df.shape[0]} rows, {df.memory_usage(deep=True).sum() / (1024 ** 2)}MB)")
+                    logger.info(f'{utils.df_to_print(df.head(1))}')
+
+                except Exception as e:
+                    retries += 1
+                    logger.warning(f"({state['usps']}, {str(year)}): {str(e)} (Retrying {retries}/{max_retries})")
+            
+                if (raw_year_data is None) and (retries == max_retries):
+                    logger.warning(f"Failed download {retries}/{max_retries} -- skipping to next year")
+                    n += 1 
+                    retries = 0 
+                    failed_downloads.append({'state_name':state['name'], 'year':year, 'vars':CENSUS_VARS}) 
+
+        # Log successes/failures
+        df = pd.concat(dataframes)
+        logger.info(f"Total Download: {df.shape[0]} rows, {df.memory_usage(deep=True).sum() / (1024 ** 2)}MB")
+        if len(failed_downloads) > 0: 
+            failed_downloads_print = "\n".join(failed_downloads)
+            logger.warning(f'{len(failed_downloads)} failed downloads:\n{failed_downloads_print}')
+
+        # Store raw census download 
+        df.to_csv(RAW_CENSUS_OUTPUT)
+
+    else: 
+        df = pd.read_csv(RAW_CENSUS_OUTPUT, index_col=0)
 
     return df
 
@@ -185,10 +192,10 @@ def _transform_raw_data_long(raw_df:pd.DataFrame) -> pd.DataFrame:
     n_rows_w_negative = rows_w_negative.shape[0]
     if n_rows_w_negative > 0: 
         logger.debug(f'{n_rows_w_negative} rows have negative placeholder values for census variables:\n {utils.df_to_print(rows_w_negative.value_counts().reset_index())}')
-        # logger.info(f'Replacing these values with NaN.')
-        # df[CENSUS_VARS] = df[CENSUS_VARS].applymap(lambda x: np.nan if x < 0 else x)
+        logger.info(f'Replacing these values with NaN.')
+        df[CENSUS_VARS] = df[CENSUS_VARS].applymap(lambda x: np.nan if x < 0 else x)
     nan_counts = df.isna().sum()
-    logger.debug(f'NaN counts:\n {utils.df_to_print(nan_counts)}')
+    logger.debug(f'NaN counts:\n {utils.df_to_print(nan_counts)}') # TO-DO: Not printing correctly 
 
     # Handle Duplicates
     dups = df[df.duplicated()]
@@ -215,7 +222,7 @@ def _widen_df(long_df:pd.DataFrame) -> pd.DataFrame:
 
 def _extract_2020_data(wide_df:pd.DataFrame) -> pd.DataFrame: 
     """Remove the 2020 tracts and data from the widened data. Since a tract in 2020 can have the same GEOID as a tract
-    with a different boundary from the previous redistricting cycle, values before/after SOY 2020 do not belong in the same dictionary
+    with a different boundary from the previous redistricting cycle, values before/after SOY 2020 do not really belong in the same JSON structure
     before applying the crosswalk. After widening/collapsing the pre-2020 tract data and assigning it to 2020 tract, we will re-join the 2020 data to it.  
     """
 
@@ -228,7 +235,9 @@ def _extract_2020_data(wide_df:pd.DataFrame) -> pd.DataFrame:
 
 
 def _collapse_df(df_to_collapse:pd.DataFrame) -> pd.DataFrame:
-    """Collapse the census variable columns for pre-2020 tracts."""
+    """Collapse the census variable columns for pre-2020 tracts.
+    `nan_fill` -- JS apparently can't parse NaN values from a JSON, 
+    """
     df = df_to_collapse.copy()
 
     for var in CENSUS_VARS: 
@@ -281,25 +290,25 @@ def multiply_pct_overlaps(values_2010, weights_2020) -> pd.DataFrame:
             continue
         # logger.debug(val_10_dict)
         # logger.debug(ov)
-        for tract_2020, pct in ov.items(): 
-            # Convert the historical values of the given pre-2010 tract to its equivalent 2020 census tract 
-            pct = pct if pct <= 1 else pct / 100
-            converted_values_2010 = {year:np.round((val*pct),2) for year, val in val_10_dict.items()}
-            # Add values to the output dictionary 
-            if tract_2020 in output_dict.keys(): 
-                # Add to the values in the current dictionary
-                for year in output_dict[tract_2020].keys(): 
-                    try: 
-                        output_dict[tract_2020][year] += converted_values_2010[year]
-                    except: 
-                        logger.debug(output_dict)
-            else: 
-                output_dict[tract_2020] = converted_values_2010
+        else: 
+            for tract_2020, pct in ov.items(): 
+                # Convert the historical values of the given pre-2010 tract to its equivalent 2020 census tract 
+                pct = pct if pct <= 1 else pct / 100
+                converted_values_2010 = {year:np.round((val*pct),2) for year, val in val_10_dict.items()}
+                # Add values to the output dictionary 
+                if tract_2020 in output_dict.keys(): 
+                    # Add to the values in the current dictionary
+                    for year in output_dict[tract_2020].keys():
+                        if not np.isnan(converted_values_2010[year]):
+                            output_dict[tract_2020][year] += converted_values_2010[year]
+                else: 
+                    output_dict[tract_2020] = converted_values_2010
+        
     return output_dict
 
 
 def apply_crosswalk(joined): 
-    """Apply the crosswalk in the joined dataframe"""
+    """Apply the crosswalk in the joined dataframe for each census variable column"""
     dataframes = []
     for cvar in CENSUS_VARS:
         var_df = pd.DataFrame(multiply_pct_overlaps(joined[cvar],joined['GEOID_TRACT_20_overlap'])).T.rename_axis('GEOID_TRACT_20')
@@ -307,47 +316,64 @@ def apply_crosswalk(joined):
         dataframes.append(var_df)
         
     df = pd.concat(dataframes, axis=1)
-
     # Collapse
     df = _collapse_df(df)
     return df
 
 
-# def rejoin_2020(df:pd.DataFrame, df_2020:pd.DataFrame):
-#     """Rejoin the dataframe from 2020 to the crosswalked dataframe """
-#     joined = df.join()
 
-
-
-
-
-
-
-
-
-
-# ## Join with census data 
-
-# # Create column for joining 
-# df['GEOID_TRACT_10'] = [''.join([idx[0], idx[2], str(idx[4])]) for idx in df.index]
-# joined = df.merge(df_map_10_to_20, how='left', left_on=['GEOID_TRACT_10'], right_index=True)
-
-
-# # Multiply past values by crosswalk  
-# for var in CENSUS_VARS: 
-#     utils.multiply_pct_weights_2020(joined[var], joined['GEOID_TRACT_20_overlap'])
+def rejoin_2020(weighted_df:pd.DataFrame, df_2020:pd.DataFrame):
+    """Rejoin the dataframe from 2020 to the crosswalked dataframe """
+    # # Join dataframes 
+    # joined = df_2020.merge(weighted_df, how='right', left_on=['GEOID'], right_on=['GEOID_TRACT_20']).copy()
+    
+    # # Insert 2020 values into the nested rows for the correct GEOID
+    # for _, row in joined.iterrows():
+    #     for cvar in config['census_vars']: 
+    #         if isinstance(row[cvar], dict): # i.e. if not nan
+    #             joined.at[row.name, cvar]['2020'] = row[f'{cvar}-2020']
+    
+    # # Drop the 2020 specific columns 
+    # joined.drop([f'{cvar}-2020' for cvar in config['census_vars']], axis=1, inplace=True)
     
 
+    # joined = df_2020.merge(weighted_df, how='right', left_on=['GEOID'], right_on=['GEOID_TRACT_20'])
+    # for cvar in config['census_vars']:
+    #     joined[cvar]['2020'] = joined[f'{cvar}-2020']
+    
+    joined = df_2020.merge(weighted_df, how='right', left_on=['GEOID'], right_on=['GEOID_TRACT_20'])
 
+    def update_dict(row, cvar):
+        cvar_value_2020 = row[f'{cvar}-2020']
+        current_dict = row[cvar]
+        current_dict['2020'] = cvar_value_2020
+        return current_dict
+    
+    for cvar in config['census_vars']:
+        joined[cvar] = joined.apply(lambda row: update_dict(row, cvar), axis=1)
+        # drop the existing 2020 column from the join 
+        joined.drop([f'{cvar}-2020'], axis=1, inplace=True)
+        
+    return joined
+
+def replace_nan_with_none(d):
+    if isinstance(d, dict):
+        return {k: (v if not pd.isna(v) else None) for k, v in d.items()}
+    else:
+        return d
 
 def main() -> None:
+    
+    ## Download/load crosswalk and pygris geoms 
+    logger.info(f'Obtaining tract crosswalks (tract_crosswalk.py)')
+    get_tract_crosswalks() 
 
-    ## Download raw census data if necessary
-    proceed_download = check_raw_census_download()
-    if proceed_download: 
-        df = download_raw_data()
-    else: 
-        df = pd.read_csv(RAW_CENSUS_OUTPUT)
+    logger.info(f'Obtaining simplified geometries from pygris')
+    py_geoms = get_all_tract_geoms_year(year=2020, erase_water=False, simplify_tolerance=.001)
+    # get_tract_crosswalks uses raw geometries to calculate overlaps -- these are for our final output here
+
+    ## Download (or load cached) raw census data
+    df = load_raw_census_data()
 
     ## Transform raw data (long format)
     df = _transform_raw_data_long(df)
@@ -365,15 +391,26 @@ def main() -> None:
     df = join_crosswalk(df)
     df = apply_crosswalk(df)
 
-    ## Re-Join the 2020 data 
-    df.join(df_2020, how='left')
+    ## Re-Join the 2020 data to crosswalked pre-2020 data
+    df = rejoin_2020(df, df_2020)
 
-
-    ## Re-join 2020 data to crosswalked pre-2020 data 
-
-
+    ## Join the geometries 
+    df_geoms = df.merge(py_geoms, how='left', left_on='GEOID', right_index=True)
+    df_geoms = df_geoms[~(df_geoms['GEOID'].isna()) & ~(df_geoms['geometry'].isna())] # TO-DO: Handle/Monitor/Track NaNs
+    
     ## Save output 
 
+    # Convert to geodataframe
+    df_geoms = gpd.GeoDataFrame(df_geoms)
+
+    # Replace all nans with 'NaN' for GeoJSON so JS can parse
+    df_geoms.fillna(value='NaN', inplace=True)
+    for cvar in CENSUS_VARS: 
+        df_geoms[cvar] = df_geoms[cvar].apply(lambda x: utils.replace_dict_nans(x))
+
+    output_path = utils.construct_geojson_output_path() # TO-DO: Change path so it includes the simplification tolerance, water erasure, and buffer (if applicable)
+    logger.info(f'Saving to {output_path}')
+    df_geoms.to_file(output_path)
 
 if __name__ == "__main__":
     main()
