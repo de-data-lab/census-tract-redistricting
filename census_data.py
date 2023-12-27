@@ -321,7 +321,6 @@ def apply_crosswalk(joined):
     return df
 
 
-
 def rejoin_2020(weighted_df:pd.DataFrame, df_2020:pd.DataFrame):
     """Rejoin the dataframe from 2020 to the crosswalked dataframe """
     # # Join dataframes 
@@ -356,11 +355,26 @@ def rejoin_2020(weighted_df:pd.DataFrame, df_2020:pd.DataFrame):
         
     return joined
 
-def replace_nan_with_none(d):
-    if isinstance(d, dict):
-        return {k: (v if not pd.isna(v) else None) for k, v in d.items()}
-    else:
-        return d
+def join_geoms(rejoin_df:pd.DataFrame, py_geoms:pd.DataFrame): 
+    """Join the geoms to the finalized dataframe"""
+
+    # Rename columns from pygris to match our transformed census datafame
+    py_geoms.rename({'STATEFP': 'state_fips',
+                    'COUNTYFP': 'county_fips', 
+                    'TRACTCE': 'tract_fips', 
+                    'NAME': 'tract_dec'}, axis=1, inplace=True)
+    # Keep only needed columns (drop 'NAMELSAD', 'MTFCC', 'FUNCSTAT')
+    shared_columns = ['state_fips', 'county_fips', 'tract_fips', 'tract_dec']
+    py_geoms = py_geoms[shared_columns + ['ALAND', 'AWATER', 'INTPTLAT', 'INTPTLON', 'geometry']]
+    # Keep only states from config.yaml
+    states_fips_to_keep = [s['fips'] for s in STATES]
+    py_geoms = py_geoms[py_geoms['state_fips'].isin(states_fips_to_keep)]
+
+    # Join
+    df_geoms = rejoin_df.merge(py_geoms, how='right', left_on='GEOID', right_index=True)
+
+    return df_geoms
+
 
 def main() -> None:
     
@@ -370,7 +384,7 @@ def main() -> None:
 
     logger.info(f'Obtaining simplified geometries from pygris')
     py_geoms = get_all_tract_geoms_year(year=2020, erase_water=False, simplify_tolerance=.001)
-    # get_tract_crosswalks uses raw geometries to calculate overlaps -- these are for our final output here
+    # get_tract_crosswalks uses raw (unsimplified) geometries to calculate overlaps -- these are for our final output here
 
     ## Download (or load cached) raw census data
     df = load_raw_census_data()
@@ -395,11 +409,24 @@ def main() -> None:
     df = rejoin_2020(df, df_2020)
 
     ## Join the geometries 
-    df_geoms = df.merge(py_geoms, how='left', left_on='GEOID', right_index=True)
-    df_geoms = df_geoms[~(df_geoms['GEOID'].isna()) & ~(df_geoms['geometry'].isna())] # TO-DO: Handle/Monitor/Track NaNs
-    
-    ## Save output 
 
+    # Rename columns from pygris to match our transformed census datafame
+    py_geoms.rename({'STATEFP': 'state_fips',
+                     'COUNTYFP': 'county_fips', 
+                     'TRACTCE': 'tract_fips', 
+                     'NAME': 'tract_dec'}, axis=1, inplace=True)
+    shared_columns = ['state_fips', 'county_fips', 'tract_fips', 'tract_dec']
+    # Keep only needed columns (drop 'NAMELSAD', 'MTFCC', 'FUNCSTAT')
+    py_geoms = py_geoms[shared_columns + ['ALAND', 'AWATER', 'INTPTLAT', 'INTPTLON', 'geometry']]
+    # Keep only states from config.yaml
+    states_fips_to_keep = [s['fips'] for s in STATES]
+    py_geoms = py_geoms[py_geoms['state_fips'].isin(states_fips_to_keep)]
+
+    # Join
+    df_geoms = df.merge(py_geoms, how='right', left_on='GEOID', right_index='GEOID')
+    # df_geoms = df_geoms[~(df_geoms['GEOID'].isna()) & ~(df_geoms['geometry'].isna())] # TO-DO: Handle/Monitor/Track NaNs
+        
+    ## Save output 
     # Convert to geodataframe
     df_geoms = gpd.GeoDataFrame(df_geoms)
 

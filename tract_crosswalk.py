@@ -89,12 +89,14 @@ def _get_tract_geoms_state(year:int, state:str) -> gpd.GeoDataFrame:
 
     # tract_geoms.rename({default_geoid_col:f'GEOID_TRACT_{year_abbrev}', 
     #                     'geometry':f'geometry_{year_abbrev}'}, axis=1, inplace=True) 
-            # renaming geometry column is for calculating overlaps between 2010 and 2020, geometry_10 and geometry_20 
+    #         renaming geometry column is for calculating overlaps between 2010 and 2020, geometry_10 and geometry_20 
     
     tract_geoms[f'GEOID_TRACT_{year_abbrev}'] = tract_geoms[f'GEOID_TRACT_{year_abbrev}'].astype(str)
 
-    tract_geoms = tract_geoms[[f'GEOID_TRACT_{year_abbrev}', 'geometry']] \
-        .set_index(f'GEOID_TRACT_{year_abbrev}') 
+    # tract_geoms = tract_geoms[[f'GEOID_TRACT_{year_abbrev}', 'geometry']] \ 
+    #     .set_index(f'GEOID_TRACT_{year_abbrev}') 
+
+    tract_geoms.set_index([f'GEOID_TRACT_{year_abbrev}'], inplace=True)
     
     # Cast to geodataframe
     tract_geoms = gpd.GeoDataFrame(tract_geoms)
@@ -121,6 +123,9 @@ def get_all_tract_geoms_year(year:int, erase_water=False, simplify_tolerance=Non
     (gpd.GeoDataFrame): GeoDataFrame of all tract geometries for all states for a given year. 
     
     """
+
+    ## TO-DO: Add a parameter for overwriting local. 
+    ## Add corresponding parameters to config.yaml
 
     ## download geometries (TO-DO: change _get_tract_geoms_state() to return a list of dicts and then convert finished to dataframe after loop. 
     # Compare speed vs appending dataframes and concatenating like here)
@@ -152,6 +157,8 @@ def get_all_tract_geoms_year(year:int, erase_water=False, simplify_tolerance=Non
             elapsed_time = np.round((end_time-start_time).seconds, 3)
             logger.info(f'Download complete ({elapsed_time}s)')
 
+            geoms = gpd.read_file(tract_geom_path)
+
         else: 
             logger.info(f'Downloading {year} tract geoms from pygris')
 
@@ -170,7 +177,7 @@ def get_all_tract_geoms_year(year:int, erase_water=False, simplify_tolerance=Non
                 if n % 5 == 0: 
                     logger.info(f'Downloaded {year} tract geoms for {state["fips"]}-{state["usps"]} ({elapsed_time}s)')
 
-                if erase_water: 
+                if erase_water: ## TO-DO: Add a parameter to only apply water removal to tracts above a certain threshold of water area (there is a column from pygris for AWATER)
                     try: 
                         # Apply buffer to geometries to avoid errors with removing water
                         geoms_state['geometry'] = geoms_state['geometry'].buffer(buffer_size)
