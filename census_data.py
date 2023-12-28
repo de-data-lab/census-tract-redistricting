@@ -244,6 +244,11 @@ def bin_variables(wide_df:pd.DataFrame):
                 for col in state_df.columns: # column format: <cvar>-<year>
                     state_df[f'{col}_state-bin'] = pd.qcut(state_df[col], q=state_bins)\
                             .apply(lambda b:f"{int(b.left):,} <= {int(b.right):,}")
+                    
+                    # Log the bin levels for state, year, and cvar -- for sharing with FrontEnd
+                   
+                
+                
                 dataframes.append(state_df)
             binned_df = pd.concat(dataframes)
         else: 
@@ -259,6 +264,9 @@ def bin_variables(wide_df:pd.DataFrame):
 
         ## TO-DO: Log bins for each state, census variable, and year  
         # state_df[f'{col}_state-bin'] includes bins for all states
+
+
+        
 
         return binned_df 
 

@@ -60,6 +60,8 @@ class AzureBlobStorageManager:
         """Check if the container has a blob of the given name"""
 
         return os.path.basename(file_name) in self.list_blobs(name_only=True) 
+    
+    ## TO-DO: add get_blob_url() method 
             
 
 def load_state_list(states=['All'], include_dc=True, include_pr=False) -> list: 
@@ -105,7 +107,7 @@ def load_state_list(states=['All'], include_dc=True, include_pr=False) -> list:
     return state_list
 
 
-def _param_sum_str(include_cvars=True, include_states=True, include_years=True) -> str: 
+def _param_sum_str(include_cvars=True, include_states=True, include_years=True, include_bins=True) -> str: 
     """Summarize parameters in config (for constructing file paths)."""
 
     with open('config.yaml', 'r') as file: 
@@ -136,7 +138,13 @@ def _param_sum_str(include_cvars=True, include_states=True, include_years=True) 
     if include_years:
         param_sum_str += f'_{config["start_year"]}-{config["end_year"]}'
 
-    # param_sum_str = state_str + f'_{config["start_year"]}-{config["end_year"]}'
+    if include_bins:
+        for bin_level in ('state', 'national'):
+            bin_count = config['bins'][bin_level]
+            if bin_count is None: 
+                continue 
+            param_sum_str += f"_{bin_level}-bin-{bin_count}"
+
     return param_sum_str
 
 
@@ -146,7 +154,7 @@ def construct_raw_census_path() -> str:
     with open('config.yaml', 'r') as file: 
         config = yaml.full_load(file)
 
-    return os.path.join(config['data_dir'], 'raw', _param_sum_str() + '.csv')
+    return os.path.join(config['data_dir'], 'raw', _param_sum_str(include_bins=False) + '.csv')
 
 def construct_geojson_output_path() -> str: 
     """Construct the output path for the geojson produced by census_data.py based on config.yaml"""
@@ -154,7 +162,7 @@ def construct_geojson_output_path() -> str:
     with open('config.yaml', 'r') as file: 
         config = yaml.full_load(file)
 
-    return  os.path.join(config['data_dir'], _param_sum_str() +'.json')
+    return  os.path.join(config['data_dir'], _param_sum_str() + '.json')
 
 
 def validate_config(config:dict) -> dict:
@@ -199,6 +207,15 @@ def validate_config(config:dict) -> dict:
         if len(invalid_states) > 0:
             error_messages['states'] = f'{invalid_states}'
 
+    # TO-DO: bin level validation
+    state_bins, nat_bins = config['bins']['state'], config['bins']['national']
+    for bin_count, dict_key in zip((state_bins, nat_bins), ('state_bin','national_bin')): 
+        if (bin_count is not None): 
+            try: 
+                assert (isinstance(bin_count, int) and (bin_count > 0))
+            except AssertionError: 
+                error_messages[dict_key] = 'Bin must be an int greater than 0.'
+
     # log results
     if len(error_messages.items()) > 0: 
         logger.info(error_messages)
@@ -224,7 +241,6 @@ def df_to_print(df:pd.DataFrame, n_rows=5, index=False) -> str:
     for line in df.to_csv(index=index).splitlines()[:min(n_rows, df.shape[0])]: 
         output_str += line.replace(',', ', ') + "\n"
     return output_str
-
 
 
 def std_fips(fips_code, geog=None) -> str:
@@ -297,3 +313,4 @@ def replace_dict_nans(d:dict, nan_fill='NaN'):
         return {k: (v if not pd.isna(v) else nan_fill) for k, v in d.items()}
     else:
         return d
+    
