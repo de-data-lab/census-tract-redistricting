@@ -220,6 +220,44 @@ def _widen_df(long_df:pd.DataFrame) -> pd.DataFrame:
 
     return df 
 
+
+def bin_variables(wide_df:pd.DataFrame):
+    """Bin each census variable per year in the widened dataframe (depending on config parameters)""" 
+
+    ## TO-DO: test the bin validation steps in utils.validate_config()    
+    logger.info(f'Checking binning parameters ({config["bins"]})')
+    state_bins = config['bins']['state'] if isinstance(config['bins']['state'], int) else None
+    nat_bins = config['bins']['national'] if isinstance(config['bins']['national'], int) else None
+
+    if (state_bins is None) and (nat_bins is None): 
+        logger.info('Skipping binning.')
+        return wide_df
+    else:
+        # Bin by state first -- reduce amount of state loops/filters vs. doing it inside the column loop, 
+        # though we have to loop through the columns twice this way. 
+        if state_bins is not None: 
+            dataframes = []
+            for state_name in wide_df['state_name'].unique(): 
+                state_df = wide_df[wide_df['state_name'] == state_name]
+                for col in state_df.columns: # column format: <cvar>-<year>
+                    state_df[f'{col}_state-bin'] = pd.qcut(state_df[col], q=state_bins)\
+                            .apply(lambda b:f"{int(b.left):,} <= {int(b.right):,}")
+                    dataframes.append(state_df)
+            binned_df = pd.concat(dataframes)
+        else: 
+            binned_df = wide_df.copy() 
+        # Bin by national
+        if nat_bins is not None: 
+            for col in state_df.columns: # second column loop
+                binned_df[f'{col}_nat-bin'] = pd.qcut(binned_df[col], q=nat_bins)\
+                    .apply(lambda b:f"{int(b.left):,} <= {int(b.right):,}")
+        # Sort columns alphabetically
+        cols_sorted = sorted(binned_df.columns)
+        binned_df = binned_df[cols_sorted]
+
+        return binned_df 
+
+
 def _extract_2020_data(wide_df:pd.DataFrame) -> pd.DataFrame: 
     """Remove the 2020 tracts and data from the widened data. Since a tract in 2020 can have the same GEOID as a tract
     with a different boundary from the previous redistricting cycle, values before/after SOY 2020 do not really belong in the same JSON structure
@@ -391,6 +429,8 @@ def main() -> None:
 
     ## Transform raw data (long format)
     df = _transform_raw_data_long(df)
+
+    ## Apply binning (if parameters set)
 
     ## Widen data 
     df = _widen_df(df)
