@@ -237,12 +237,14 @@ def bin_variables(wide_df:pd.DataFrame):
         # though we have to loop through the columns twice this way. 
         if state_bins is not None: 
             dataframes = []
-            for state_name in wide_df['state_name'].unique(): 
-                state_df = wide_df[wide_df['state_name'] == state_name]
+            # Get unique state_names from multi-index
+            for state_name in wide_df.index.get_level_values(level='state_name').unique():     
+                # Access rows with specific state name in multi-index 
+                state_df = wide_df.xs(key=state_name, level='state_name', drop_level=False)
                 for col in state_df.columns: # column format: <cvar>-<year>
                     state_df[f'{col}_state-bin'] = pd.qcut(state_df[col], q=state_bins)\
                             .apply(lambda b:f"{int(b.left):,} <= {int(b.right):,}")
-                    dataframes.append(state_df)
+                dataframes.append(state_df)
             binned_df = pd.concat(dataframes)
         else: 
             binned_df = wide_df.copy() 
@@ -254,6 +256,9 @@ def bin_variables(wide_df:pd.DataFrame):
         # Sort columns alphabetically
         cols_sorted = sorted(binned_df.columns)
         binned_df = binned_df[cols_sorted]
+
+        ## TO-DO: Log bins for each state, census variable, and year  
+        # state_df[f'{col}_state-bin'] includes bins for all states
 
         return binned_df 
 
@@ -430,10 +435,11 @@ def main() -> None:
     ## Transform raw data (long format)
     df = _transform_raw_data_long(df)
 
-    ## Apply binning (if parameters set)
-
     ## Widen data 
     df = _widen_df(df)
+
+    ## Apply binning (if parameters set)
+    df = bin_variables(df)
     
     ## Separate 2020 data from other years
     df_2020 = _extract_2020_data(df)
