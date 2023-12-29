@@ -11,6 +11,7 @@ import sys
 import numpy as np
 import geopandas as gpd
 import datetime as dt
+from collections import defaultdict
 
 from tract_crosswalk import get_tract_crosswalks, load_crosswalk_2010_2020, get_all_tract_geoms_year
 
@@ -221,56 +222,6 @@ def _widen_df(long_df:pd.DataFrame) -> pd.DataFrame:
     return df 
 
 
-def bin_variables(wide_df:pd.DataFrame):
-    """Bin each census variable per year in the widened dataframe (depending on config parameters)""" 
-
-    ## TO-DO: test the bin validation steps in utils.validate_config()    
-    logger.info(f'Checking binning parameters ({config["bins"]})')
-    state_bins = config['bins']['state'] if isinstance(config['bins']['state'], int) else None
-    nat_bins = config['bins']['national'] if isinstance(config['bins']['national'], int) else None
-
-    if (state_bins is None) and (nat_bins is None): 
-        logger.info('Skipping binning.')
-        return wide_df
-    else:
-        # Bin by state first -- reduce amount of state loops/filters vs. doing it inside the column loop, 
-        # though we have to loop through the columns twice this way. 
-        if state_bins is not None: 
-            dataframes = []
-            # Get unique state_names from multi-index
-            for state_name in wide_df.index.get_level_values(level='state_name').unique():     
-                # Access rows with specific state name in multi-index 
-                state_df = wide_df.xs(key=state_name, level='state_name', drop_level=False)
-                for col in state_df.columns: # column format: <cvar>-<year>
-                    state_df[f'{col}_state-bin'] = pd.qcut(state_df[col], q=state_bins)\
-                            .apply(lambda b:f"{int(b.left):,} <= {int(b.right):,}")
-                    
-                    # Log the bin levels for state, year, and cvar -- for sharing with FrontEnd
-                   
-                
-                
-                dataframes.append(state_df)
-            binned_df = pd.concat(dataframes)
-        else: 
-            binned_df = wide_df.copy() 
-        # Bin by national
-        if nat_bins is not None: 
-            for col in state_df.columns: # second column loop
-                binned_df[f'{col}_nat-bin'] = pd.qcut(binned_df[col], q=nat_bins)\
-                    .apply(lambda b:f"{int(b.left):,} <= {int(b.right):,}")
-        # Sort columns alphabetically
-        cols_sorted = sorted(binned_df.columns)
-        binned_df = binned_df[cols_sorted]
-
-        ## TO-DO: Log bins for each state, census variable, and year  
-        # state_df[f'{col}_state-bin'] includes bins for all states
-
-
-        
-
-        return binned_df 
-
-
 def _extract_2020_data(wide_df:pd.DataFrame) -> pd.DataFrame: 
     """Remove the 2020 tracts and data from the widened data. Since a tract in 2020 can have the same GEOID as a tract
     with a different boundary from the previous redistricting cycle, values before/after SOY 2020 do not really belong in the same JSON structure
@@ -292,7 +243,7 @@ def _collapse_df(df_to_collapse:pd.DataFrame) -> pd.DataFrame:
     df = df_to_collapse.copy()
 
     for var in CENSUS_VARS: 
-        logger.info(var)
+        # logger.info(var)
         var_year_columns = df.filter(regex=var).columns
         df[var] = df[var_year_columns] \
             .apply(lambda row: {str(col.split('-')[1]): np.round(row_value, 2) for col, row_value in row.items()}
@@ -317,7 +268,7 @@ def join_crosswalk(collapse_df:pd.DataFrame, how='inner') -> pd.DataFrame:
     return joined 
 
 
-def multiply_pct_overlaps(values_2010, weights_2020) -> pd.DataFrame: 
+def multiply_pct_overlaps(values_2010, weights_2020) -> dict: 
     """Create historical data for 2020 Tracts by multiplying past year's values by their respective crosswalk weights
     Currently works only on one variable at a time.
 
@@ -330,11 +281,11 @@ def multiply_pct_overlaps(values_2010, weights_2020) -> pd.DataFrame:
 
     Returns: 
 
-    df_crosswalk (pd.DataFrame): Historical yearly values for the overlapping 2020 tracts.
+    df_crosswalk (dict): Historical yearly values for the overlapping 2020 tracts  {<GEOID_tract_2020>:{<year-1>:<val>, ..., <year-n>:<val>}}
     
     """
 
-    output_dict = {}
+    output_dict = {} 
     for val_10_dict, ov in zip(values_2010, weights_2020):
         # Skip if the raw values column is nan for this 2020 tract (i.e. we couldn't obtain data for this variable and year in the Census API)
         if not isinstance(val_10_dict,dict): 
@@ -406,7 +357,119 @@ def rejoin_2020(weighted_df:pd.DataFrame, df_2020:pd.DataFrame):
         
     return joined
 
-def join_geoms(rejoin_df:pd.DataFrame, py_geoms:pd.DataFrame): 
+def bin_variables(rejoined_df:pd.DataFrame):
+    """Bin each census variable per year in the widened dataframe (depending on config parameters), recollapsing at the end.
+    Logs the bin levels for each census variable, year, and national + state (depending on config parameters).
+
+    Previously was done on wide_df and before the crosswalk step, but the conversion to 2020 tracts affects a variable's per-tract distribution.
+    Hence if bins are assigned to values in 2020 tracts it needs to occur after the tract conversion. But binning also needs to be done on an un-collapsed dataframe 
+    (if we're using pd.qcut()), and our functions to convert to 2020 tracts are written to work on the already-collapsed dataframe (Catch-22).
+
+    At least for the time being, we will un-collapse the completed dataframe, calculate/assign bins, and re-collapse.
+    Given the current JSON-Rows data model of the crosswalk (convert-ctracts_pct-area_2010-to-2020.json), to edit the conversion functions to apply 
+    on the un-collapsed dataframe would require normalizing the 'GEOID_TRACT_20_overlap' column, which creates a massive sparse dataframe of 85395 columns (one for every 2020 tract)
+    that is time-consuming to produce. I might be able to adjust the cross-walk structure to work around this, but the current data model is flexible and applicable beyond this script.
+
+    This un-collapse and re-collapse step from my tests adds <2 seconds for a single variable run on a national dataset. 
+    """ 
+
+    logger.info(f'Checking binning parameters ({config["bins"]})')
+    state_bins = config['bins']['state'] if isinstance(config['bins']['state'], int) else None
+    nat_bins = config['bins']['national'] if isinstance(config['bins']['national'], int) else None
+
+    if (state_bins is None) and (nat_bins is None): 
+        logger.info('Skipping binning.')
+        return rejoined_df
+    else:
+        # Initialize dict for logging bins to JSON for front end's reference 
+        bin_dict = {cvar:{str(year):{} for year in YEARS} for cvar in CENSUS_VARS}
+
+        # Break out the census variable columns by year 
+        df = rejoined_df.drop(list(rejoined_df.filter(regex='|'.join(CENSUS_VARS)).columns), axis=1) # to re-concatenate with cvar_df
+        non_cvar_cols = list(df.columns)
+        for cvar in CENSUS_VARS: 
+            cvar_df = pd.json_normalize(rejoined_df[cvar])
+            cvar_df.columns = [f'{cvar}-{year}' for year in cvar_df.columns]
+            df = pd.concat([df, cvar_df], axis=1)
+
+        ## Calculate, assign, and log state/national bins in dict
+        # Bin by state first -- reduce amount of state loops/filters vs. doing it inside the column loop, 
+        # though we have to loop through the columns again separately for the national bins.
+        if state_bins is not None: 
+            dataframes = []
+            for state_name in df['state_name'].unique():     
+                state_df = df[df['state_name'] == state_name]
+                for col in state_df.filter(regex='|'.join(CENSUS_VARS)): # first column loop
+                    state_df[f'{col}-state_bin'] = pd.qcut(state_df[col], q=state_bins)\
+                            .apply(lambda b:f"{int(b.left):,} <= {int(b.right):,}") ## TO-DO: Use more complex bin formatting function to increment left endpoints by 1, starting from left 
+                    
+                    # Adjust the left endpoint for all levels except the first (TO-DO: write utils function for this)
+                    categories = state_df[f'{col}-state_bin'].cat.categories
+                    categories = [f"{int(c.split(' <= ')[0].replace(',', '')) + 1:,}" + c[c.find(' <= '):] if i != 0 else c for i, c in enumerate(categories)]
+
+                    # Map the old categories to the new ones in the Series
+                    state_df[f'{col}-state_bin'] = state_df[f'{col}-state_bin'].map(dict(zip(state_df[f'{col}-state_bin'].cat.categories, categories)))
+                    state_df[f'{col}-state_bin'] = state_df[f'{col}-state_bin'].astype('category')
+
+                    # Record the bin levels in the logging dict
+                    cvar, year = col.split("-") # column format: <cvar>-<year>
+                    bin_dict[cvar][year][state_name] = list(categories) 
+
+
+                dataframes.append(state_df)
+
+            df = pd.concat(dataframes)
+
+        # National Bins
+        if nat_bins is not None: 
+            for col in df.filter(regex='|'.join(CENSUS_VARS)): # second column loop
+                df[f'{col}-nat_bin'] = pd.qcut(df[col], q=nat_bins)\
+                    .apply(lambda b:f"{int(b.left):,} <= {int(b.right):,}")
+                
+                # Adjust the left endpoint for all levels except the first (TO-DO: write utils function for this)
+                categories = df[f'{col}-nat_bin'].cat.categories
+                categories = [f"{int(c.split(' <= ')[0].replace(',', '')) + 1:,}" + c[c.find(' <= '):] if i != 0 else c for i, c in enumerate(categories)]
+
+                # Map the old categories to the new ones in the Series
+                state_df[f'{col}-state_bin'] = state_df[f'{col}-state_bin'].map(dict(zip(state_df[f'{col}-state_bin'].cat.categories, categories)))
+                state_df[f'{col}-state_bin'] = state_df[f'{col}-state_bin'].astype('category')
+
+                # Record the bin levels in the logging dict
+                cvar, year = col.split("-") # column format: <cvar>-<year>
+                bin_dict[cvar][year]['nat_bins'] = list(categories) 
+
+        # Collapse cvar columns and bin columns (separately)
+        def collapse_cvar_row(row:pd.Series, cvar:str) -> dict: 
+            # Collapsed column (named cvar): {'2010':{'state_bin':<bin>, 'nat_bin':<bin>, 'value': <var_value>}, '2011':{...}, ...}
+            result_dict = defaultdict(dict)
+            for col in row.keys(): 
+                if cvar in col: 
+                    col_split = col.split('-') # either a value column (<cvar>-<year>) or a bin column (<cvar>-<year>-<state/national>_bin)
+                    if len(col_split) == 3: 
+                        cvar, year, bin_level_str = col_split
+                        result_dict[year][bin_level_str] = row[col]
+                    else: 
+                        cvar, year = col_split
+                        result_dict[year]['value'] = row[col]
+            return result_dict
+
+        for cvar in CENSUS_VARS: 
+            df[cvar] = df.apply(lambda row: collapse_cvar_row(row, cvar), axis=1)
+            # drop other non-collapsed cvar columns 
+            other_cvar_cols = [col for col in df.columns if cvar in col and len(col.split('-')) > 1]
+            df.drop(other_cvar_cols, axis=1, inplace=True)
+                
+        # Sort columns alphabetically
+        cols_sorted = non_cvar_cols + sorted(list(df.filter(regex='|'.join(CENSUS_VARS)).columns))
+        df = df[cols_sorted]
+
+        # Log the dict of bins
+        logger.info('BIN LEVELS:\n' + json.dumps(bin_dict, indent=2)) ## TO-DO: Log the bins to separate file for frontend to assign colors to bins
+
+        return df
+    
+
+def join_geoms(df:pd.DataFrame, py_geoms:pd.DataFrame): 
     """Join the geoms to the finalized dataframe"""
 
     # Rename columns from pygris to match our transformed census datafame
@@ -422,7 +485,7 @@ def join_geoms(rejoin_df:pd.DataFrame, py_geoms:pd.DataFrame):
     py_geoms = py_geoms[py_geoms['state_fips'].isin(states_fips_to_keep)]
 
     # Join
-    df_geoms = rejoin_df.merge(py_geoms, how='right', left_on='GEOID', right_index=True)
+    df_geoms = df.merge(py_geoms, how='right', left_on='GEOID', right_index=True)
 
     return df_geoms
 
@@ -434,8 +497,9 @@ def main() -> None:
     get_tract_crosswalks() 
 
     logger.info(f'Obtaining simplified geometries from pygris')
-    py_geoms = get_all_tract_geoms_year(year=2020, erase_water=False, simplify_tolerance=.001)
-    # get_tract_crosswalks uses raw (unsimplified) geometries to calculate overlaps -- these are for our final output here
+    py_geoms = get_all_tract_geoms_year(year=2020, erase_water=False, simplify_tolerance=.001) # simplify for final map output, not for calculating overlaps in tract_crosswalk.py
+    states_fips_to_keep = [s['fips'] for s in STATES]
+    py_geoms = py_geoms[py_geoms['STATEFP'].isin(states_fips_to_keep)]
 
     ## Download (or load cached) raw census data
     df = load_raw_census_data()
@@ -445,9 +509,6 @@ def main() -> None:
 
     ## Widen data 
     df = _widen_df(df)
-
-    ## Apply binning (if parameters set)
-    df = bin_variables(df)
     
     ## Separate 2020 data from other years
     df_2020 = _extract_2020_data(df)
@@ -462,27 +523,21 @@ def main() -> None:
     ## Re-Join the 2020 data to crosswalked pre-2020 data
     df = rejoin_2020(df, df_2020)
 
+    ## Bin the census variable columns 
+    df = bin_variables(df)
+
     ## Join the geometries 
-
-    # Rename columns from pygris to match our transformed census datafame
-    py_geoms.rename({'STATEFP': 'state_fips',
-                     'COUNTYFP': 'county_fips', 
-                     'TRACTCE': 'tract_fips', 
-                     'NAME': 'tract_dec'}, axis=1, inplace=True)
-    shared_columns = ['state_fips', 'county_fips', 'tract_fips', 'tract_dec']
-    # Keep only needed columns (drop 'NAMELSAD', 'MTFCC', 'FUNCSTAT')
-    py_geoms = py_geoms[shared_columns + ['ALAND', 'AWATER', 'INTPTLAT', 'INTPTLON', 'geometry']]
-    # Keep only states from config.yaml
-    states_fips_to_keep = [s['fips'] for s in STATES]
-    py_geoms = py_geoms[py_geoms['state_fips'].isin(states_fips_to_keep)]
-
-    # Join
-    df_geoms = df.merge(py_geoms, how='right', left_on='GEOID', right_index='GEOID')
-    # df_geoms = df_geoms[~(df_geoms['GEOID'].isna()) & ~(df_geoms['geometry'].isna())] # TO-DO: Handle/Monitor/Track NaNs
+    df_geoms = df.merge(py_geoms['geometry'], how='right', left_on='GEOID', right_index=True)
         
     ## Save output 
     # Convert to geodataframe
     df_geoms = gpd.GeoDataFrame(df_geoms)
+
+    # Drop index in columns if exists 
+    logger.info(df_geoms.columns)
+    if "index" in df_geoms.columns: 
+        logger.info("'index' in final output names. Did you add a reset_index() somewhere?") ## TO-DO: Determine where this column is coming from
+        df_geoms.grop(['index'], axis=1, inplace=True)
 
     # Replace all nans with 'NaN' for GeoJSON so JS can parse
     df_geoms.fillna(value='NaN', inplace=True)
@@ -491,7 +546,7 @@ def main() -> None:
 
     output_path = utils.construct_geojson_output_path() # TO-DO: Change path so it includes the simplification tolerance, water erasure, and buffer (if applicable)
     logger.info(f'Saving to {output_path}')
-    df_geoms.to_file(output_path)
+    df_geoms.to_file(output_path, driver='GeoJSON', index=False)
 
 if __name__ == "__main__":
     main()

@@ -307,10 +307,17 @@ def nan_counts(df):
     df.isna().sum()
 
 
-def replace_dict_nans(d:dict, nan_fill='NaN'):
-    """Replace nans in a dictionary with None"""
+# def replace_dict_nans(d:dict, nan_fill='NaN'):
+#     """Replace nans in a dictionary with None"""
+#     if isinstance(d, dict):
+#         return {k: (v if not pd.isna(v) else nan_fill) for k, v in d.items()}
+#     else:
+#         return d
+    
+def replace_dict_nans(d: dict, nan_fill='NaN'):
+    """Recursively replace nans in a dictionary with a specified fill value"""
     if isinstance(d, dict):
-        return {k: (v if not pd.isna(v) else nan_fill) for k, v in d.items()}
+        return {k: replace_dict_nans(v, nan_fill) if isinstance(v, dict) else (v if not pd.isna(v) else nan_fill) for k, v in d.items()}
     else:
         return d
-    
+
